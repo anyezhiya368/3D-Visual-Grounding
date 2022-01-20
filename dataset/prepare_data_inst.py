@@ -34,7 +34,7 @@ def f_test(fn):
     coords = np.ascontiguousarray(points[:, :3] - points[:, :3].mean(0))
     colors = np.ascontiguousarray(points[:, 3:6]) / 127.5 - 1
 
-    torch.save((coords, colors), fn[:-15] + '_inst_nostuff.pth')
+    torch.save((coords, colors), fn[:-15] + '_inst_nostuff.pth', _use_new_zipfile_serialization=False)
     print('Saving to ' + fn[:-15] + '_inst_nostuff.pth')
 
 
@@ -85,7 +85,7 @@ def f(fn):
         instance_labels[pointids] = i
         assert(len(np.unique(sem_labels[pointids])) == 1)
 
-    torch.save((coords, colors, sem_labels, instance_labels), fn[:-15]+'_inst_nostuff.pth')
+    torch.save((coords, colors, sem_labels, instance_labels), fn[:-15]+'_inst_nostuff.pth', _use_new_zipfile_serialization=False)
     print('Saving to ' + fn[:-15]+'_inst_nostuff.pth')
 
 # for fn in files:

@@ -17,7 +17,7 @@ def get_parser():
     args_cfg = parser.parse_args()
     assert args_cfg.config is not None
     with open(args_cfg.config, 'r') as f:
-        config = yaml.load(f)
+        config = yaml.safe_load(f)
     for key in config:
         for k, v in config[key].items():
             setattr(args_cfg, k, v)

@@ -35,7 +35,6 @@ class Dataset:
             self.test_workers = cfg.test_workers
             cfg.batch_size = 1
 
-
     def trainLoader(self):
         train_file_names = sorted(glob.glob(os.path.join(self.data_root, self.dataset, 'train', '*' + self.filename_suffix)))
         self.train_files = [torch.load(i) for i in train_file_names]
@@ -45,7 +44,6 @@ class Dataset:
         train_set = list(range(len(self.train_files)))
         self.train_data_loader = DataLoader(train_set, batch_size=self.batch_size, collate_fn=self.trainMerge, num_workers=self.train_workers,
                                             shuffle=True, sampler=None, drop_last=True, pin_memory=True)
-
 
     def valLoader(self):
         val_file_names = sorted(glob.glob(os.path.join(self.data_root, self.dataset, 'val', '*' + self.filename_suffix)))

@@ -13,6 +13,8 @@ from util.config import cfg
 from util.log import logger
 import util.utils as utils
 
+device = torch.device("cuda:0" if torch.cuda.is_available() else 'cpu')
+
 def init():
     # copy important files to backup
     backup_dir = os.path.join(cfg.exp_path, 'backup_files')

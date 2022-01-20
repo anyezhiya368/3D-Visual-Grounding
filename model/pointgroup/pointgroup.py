@@ -5,8 +5,18 @@ Written by Li Jiang
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import spconv
-from spconv.modules import SparseModule
+from spconv.pytorch import ops
+from spconv.pytorch.conv import (SparseConv2d, SparseConv3d, SparseConvTranspose2d,
+                         SparseConvTranspose3d, SparseInverseConv2d,
+                         SparseInverseConv3d, SubMConv2d, SubMConv3d)
+from spconv.pytorch.core import SparseConvTensor
+from spconv.pytorch.identity import Identity
+from spconv.pytorch.modules import SparseModule, SparseSequential
+from spconv.pytorch.ops import ConvAlgo
+from spconv.pytorch.pool import SparseMaxPool2d, SparseMaxPool3d
+from spconv.pytorch.tables import AddTable, ConcatTable
 import functools
 from collections import OrderedDict
 import sys
@@ -14,34 +24,35 @@ sys.path.append('../../')
 
 from lib.pointgroup_ops.functions import pointgroup_ops
 from util import utils
+from util.pytorch_util import SharedMLP
 
 class ResidualBlock(SparseModule):
     def __init__(self, in_channels, out_channels, norm_fn, indice_key=None):
         super().__init__()
 
         if in_channels == out_channels:
-            self.i_branch = spconv.SparseSequential(
+            self.i_branch = SparseSequential(
                 nn.Identity()
             )
         else:
-            self.i_branch = spconv.SparseSequential(
-                spconv.SubMConv3d(in_channels, out_channels, kernel_size=1, bias=False)
+            self.i_branch = SparseSequential(
+                SubMConv3d(in_channels, out_channels, kernel_size=1, bias=False)
             )
 
-        self.conv_branch = spconv.SparseSequential(
+        self.conv_branch = SparseSequential(
             norm_fn(in_channels),
             nn.ReLU(),
-            spconv.SubMConv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False, indice_key=indice_key),
+            SubMConv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False, indice_key=indice_key),
             norm_fn(out_channels),
             nn.ReLU(),
-            spconv.SubMConv3d(out_channels, out_channels, kernel_size=3, padding=1, bias=False, indice_key=indice_key)
+            SubMConv3d(out_channels, out_channels, kernel_size=3, padding=1, bias=False, indice_key=indice_key)
         )
 
     def forward(self, input):
-        identity = spconv.SparseConvTensor(input.features, input.indices, input.spatial_shape, input.batch_size)
+        identity = SparseConvTensor(input.features, input.indices, input.spatial_shape, input.batch_size)
 
         output = self.conv_branch(input)
-        output.features += self.i_branch(identity).features
+        output = output.replace_feature(self.i_branch(identity).features)
 
         return output
 
@@ -50,10 +61,10 @@ class VGGBlock(SparseModule):
     def __init__(self, in_channels, out_channels, norm_fn, indice_key=None):
         super().__init__()
 
-        self.conv_layers = spconv.SparseSequential(
+        self.conv_layers = SparseSequential(
             norm_fn(in_channels),
             nn.ReLU(),
-            spconv.SubMConv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False, indice_key=indice_key)
+            SubMConv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False, indice_key=indice_key)
         )
 
     def forward(self, input):
@@ -69,39 +80,39 @@ class UBlock(nn.Module):
 
         blocks = {'block{}'.format(i): block(nPlanes[0], nPlanes[0], norm_fn, indice_key='subm{}'.format(indice_key_id)) for i in range(block_reps)}
         blocks = OrderedDict(blocks)
-        self.blocks = spconv.SparseSequential(blocks)
+        self.blocks = SparseSequential(blocks)
 
         if len(nPlanes) > 1:
-            self.conv = spconv.SparseSequential(
+            self.conv = SparseSequential(
                 norm_fn(nPlanes[0]),
                 nn.ReLU(),
-                spconv.SparseConv3d(nPlanes[0], nPlanes[1], kernel_size=2, stride=2, bias=False, indice_key='spconv{}'.format(indice_key_id))
+                SparseConv3d(nPlanes[0], nPlanes[1], kernel_size=2, stride=2, bias=False, indice_key='spconv{}'.format(indice_key_id))
             )
 
             self.u = UBlock(nPlanes[1:], norm_fn, block_reps, block, indice_key_id=indice_key_id+1)
 
-            self.deconv = spconv.SparseSequential(
+            self.deconv = SparseSequential(
                 norm_fn(nPlanes[1]),
                 nn.ReLU(),
-                spconv.SparseInverseConv3d(nPlanes[1], nPlanes[0], kernel_size=2, bias=False, indice_key='spconv{}'.format(indice_key_id))
+                SparseInverseConv3d(nPlanes[1], nPlanes[0], kernel_size=2, bias=False, indice_key='spconv{}'.format(indice_key_id))
             )
 
             blocks_tail = {}
             for i in range(block_reps):
                 blocks_tail['block{}'.format(i)] = block(nPlanes[0] * (2 - i), nPlanes[0], norm_fn, indice_key='subm{}'.format(indice_key_id))
             blocks_tail = OrderedDict(blocks_tail)
-            self.blocks_tail = spconv.SparseSequential(blocks_tail)
+            self.blocks_tail = SparseSequential(blocks_tail)
 
     def forward(self, input):
         output = self.blocks(input)
-        identity = spconv.SparseConvTensor(output.features, output.indices, output.spatial_shape, output.batch_size)
+        identity = SparseConvTensor(output.features, output.indices, output.spatial_shape, output.batch_size)
 
         if len(self.nPlanes) > 1:
             output_decoder = self.conv(output)
             output_decoder = self.u(output_decoder)
             output_decoder = self.deconv(output_decoder)
 
-            output.features = torch.cat((identity.features, output_decoder.features), dim=1)
+            output = output.replace_feature(torch.cat((identity.features, output_decoder.features), dim=1))
 
             output = self.blocks_tail(output)
 
@@ -144,13 +155,13 @@ class PointGroup(nn.Module):
             input_c += 3
 
         #### backbone
-        self.input_conv = spconv.SparseSequential(
-            spconv.SubMConv3d(input_c, m, kernel_size=3, padding=1, bias=False, indice_key='subm1')
+        self.input_conv = SparseSequential(
+            SubMConv3d(input_c, m, kernel_size=3, padding=1, bias=False, indice_key='subm1')
         )
 
         self.unet = UBlock([m, 2*m, 3*m, 4*m, 5*m, 6*m, 7*m], norm_fn, block_reps, block, indice_key_id=1)
 
-        self.output_layer = spconv.SparseSequential(
+        self.output_layer = SparseSequential(
             norm_fn(m),
             nn.ReLU()
         )
@@ -168,7 +179,7 @@ class PointGroup(nn.Module):
 
         #### score branch
         self.score_unet = UBlock([m, 2*m], norm_fn, 2, block, indice_key_id=1)
-        self.score_outputlayer = spconv.SparseSequential(
+        self.score_outputlayer = SparseSequential(
             norm_fn(m),
             nn.ReLU()
         )
@@ -192,6 +203,7 @@ class PointGroup(nn.Module):
             for m in self.pretrain_module:
                 print("Load pretrained " + m + ": %d/%d" % utils.load_model_param(module_map[m], pretrain_dict, prefix=m))
 
+        self.mlp_module = SharedMLP([19, 16, 16], bn=True)
 
     @staticmethod
     def set_bn_init(m):
@@ -247,7 +259,7 @@ class PointGroup(nn.Module):
         out_feats = pointgroup_ops.voxelization(clusters_feats, out_map.cuda(), mode)  # (M, C), float, cuda
 
         spatial_shape = [fullscale] * 3
-        voxelization_feats = spconv.SparseConvTensor(out_feats, out_coords.int().cuda(), spatial_shape, int(clusters_idx[-1, 0]) + 1)
+        voxelization_feats = SparseConvTensor(out_feats, out_coords.int().cuda(), spatial_shape, int(clusters_idx[-1, 0]) + 1)
 
         return voxelization_feats, inp_map
 
@@ -264,8 +276,11 @@ class PointGroup(nn.Module):
         output = self.input_conv(input)
         output = self.unet(output)
         output = self.output_layer(output)
-        output_feats = output.features[input_map.long()]
+        output_feats = output.features[input_map.long()] # (N, K) the feature map
+        print("OUTPUT_FEATS:", output_feats.shape)
+        assert False
 
+        ret['output_feats'] = output_feats
         #### semantic segmentation
         semantic_scores = self.linear(output_feats)   # (N, nClass), float
         semantic_preds = semantic_scores.max(1)[1]    # (N), long
@@ -280,7 +295,7 @@ class PointGroup(nn.Module):
 
         if(epoch > self.prepare_epochs):
             #### get prooposal clusters
-            object_idxs = torch.nonzero(semantic_preds > 1).view(-1)
+            object_idxs = torch.nonzero(semantic_preds > 1).view(-1) # index for all the points contained inside an object
 
             batch_idxs_ = batch_idxs[object_idxs]
             batch_offsets_ = utils.get_batch_offsets(batch_idxs_, input.batch_size)
@@ -288,6 +303,7 @@ class PointGroup(nn.Module):
             pt_offsets_ = pt_offsets[object_idxs]
 
             semantic_preds_cpu = semantic_preds[object_idxs].int().cpu()
+            # the above codes are doing the filtering job
 
             idx_shift, start_len_shift = pointgroup_ops.ballquery_batch_p(coords_ + pt_offsets_, batch_idxs_, batch_offsets_, self.cluster_radius, self.cluster_shift_meanActive)
             proposals_idx_shift, proposals_offset_shift = pointgroup_ops.bfs_cluster(semantic_preds_cpu, idx_shift.cpu(), start_len_shift.cpu(), self.cluster_npoint_thre)
@@ -305,7 +321,14 @@ class PointGroup(nn.Module):
             proposals_offset_shift += proposals_offset[-1]
             proposals_idx = torch.cat((proposals_idx, proposals_idx_shift), dim=0)
             proposals_offset = torch.cat((proposals_offset, proposals_offset_shift[1:]))
-
+            '''
+            print("PROPOSALS_IDX:", proposals_idx.shape)
+            print(proposals_idx)
+            print("PROPOSALS_OFFSET:", proposals_offset.shape)
+            print(proposals_offset)
+            assert False
+            '''
+            '''
             #### proposals voxelization again
             input_feats, inp_map = self.clusters_voxelization(proposals_idx, proposals_offset, output_feats, coords, self.score_fullscale, self.score_scale, self.mode)
 
@@ -315,7 +338,26 @@ class PointGroup(nn.Module):
             score_feats = score.features[inp_map.long()] # (sumNPoint, C)
             score_feats = pointgroup_ops.roipool(score_feats, proposals_offset.cuda())  # (nProposal, C)
             scores = self.score_linear(score_feats)  # (nProposal, 1)
+            '''
+            # proposals_ids (sumNPoint, 2)
+            # coords (N, 3)
+            # output_feats (N, K)
+            feat = torch.cat((coords, output_feats), 1)
+            proposal_num = proposals_offset.shape[0] - 1
+            proposals_feat = torch.zeros(proposal_num, 16) # 16 = output_feats.shape[1]
+            points_mask = proposals_ids[:, 1]
+            clusters_mask = proposals_idx[:, 0]
+            for proposal_idx in range(proposal_num):
+                cluster_mask = torch.nonzero(clusters_mask != proposal_idx).view(-1)
+                point_mask = points_mask[cluster_mask]
+                proposal_feat = feat[point_mask].transpose().unsqueeze(1).unsqueeze(0)    # (1, 19, 1, npoint)
+                proposal_feat = self.mlp_module(proposal_feat)                 # (1, 16, 1, npoint)
+                proposal_feat = F.maxpool_2d(
+                    proposal_feat, kernel_size=[1, proposal_feat.shape[3]]
+                )                                                              # (1, 16, 1)
+                proposals_feat[proposal_idx, :] = proposal_feat.squeeze(0).squeeze(-1)
 
+            scores = self.score_linear(proposals_feat)
             ret['proposal_scores'] = (scores, proposals_idx, proposals_offset)
 
         return ret
@@ -346,7 +388,8 @@ def model_fn_decorator(test=False):
             feats = torch.cat((feats, coords_float), 1)
         voxel_feats = pointgroup_ops.voxelization(feats, v2p_map, cfg.mode)  # (M, C), float, cuda
 
-        input_ = spconv.SparseConvTensor(voxel_feats, voxel_coords.int(), spatial_shape, cfg.batch_size)
+        input_ = SparseConvTensor(voxel_feats, voxel_coords.int(), spatial_shape, cfg.batch_size)
+
 
         ret = model(input_, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch)
         semantic_scores = ret['semantic_scores']  # (N, nClass) float32, cuda
@@ -393,7 +436,14 @@ def model_fn_decorator(test=False):
             feats = torch.cat((feats, coords_float), 1)
         voxel_feats = pointgroup_ops.voxelization(feats, v2p_map, cfg.mode)  # (M, C), float, cuda
 
-        input_ = spconv.SparseConvTensor(voxel_feats, voxel_coords.int(), spatial_shape, cfg.batch_size)
+        input_ = SparseConvTensor(voxel_feats, voxel_coords.int(), spatial_shape, cfg.batch_size)
+        '''
+        print("COORDS:", coords.shape)
+        print(coords)
+        print("BATCH_OFFSETS:", batch_offsets.shape)
+        print(batch_offsets)
+        assert False
+        '''
 
         ret = model(input_, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch)
         semantic_scores = ret['semantic_scores'] # (N, nClass) float32, cuda
