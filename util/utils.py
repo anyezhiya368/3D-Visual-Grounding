@@ -59,7 +59,7 @@ def checkpoint_restore(model, exp_path, exp_name, use_cuda=True, epoch=0, dist=F
 
     if len(f) > 0:
         logger.info('Restore from ' + f)
-        checkpoint = torch.load(f)
+        checkpoint = torch.load(f, map_location='cpu')
         for k, v in checkpoint.items():
             if 'module.' in k:
                 checkpoint = {k[len('module.'):]: v for k, v in checkpoint.items()}

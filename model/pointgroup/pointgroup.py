@@ -166,6 +166,12 @@ class PointGroup(nn.Module):
             nn.ReLU()
         )
 
+        self.mlp_module = SharedMLP([16, 16], bn=True)
+        self.mlp = nn.Sequential(
+            nn.Linear(16, 16),
+            nn.ReLU()
+        )
+        '''
         #### semantic segmentation
         self.linear = nn.Linear(m, classes) # bias(default): True
 
@@ -203,7 +209,7 @@ class PointGroup(nn.Module):
             for m in self.pretrain_module:
                 print("Load pretrained " + m + ": %d/%d" % utils.load_model_param(module_map[m], pretrain_dict, prefix=m))
 
-        self.mlp_module = SharedMLP([19, 16, 16], bn=True)
+        '''
 
     @staticmethod
     def set_bn_init(m):
@@ -263,24 +269,53 @@ class PointGroup(nn.Module):
 
         return voxelization_feats, inp_map
 
-
-    def forward(self, input, input_map, coords, batch_idxs, batch_offsets, epoch):
+    def forward(self, input, input_map, coords, batch_idxs, batch_offsets, epoch, instance_labels, instance_mask):
         '''
         :param input_map: (N), int, cuda
         :param coords: (N, 3), float, cuda
         :param batch_idxs: (N), int, cuda
         :param batch_offsets: (B + 1), int, cuda
+        :param instance_labels: (N), long, cuda
         '''
         ret = {}
+
 
         output = self.input_conv(input)
         output = self.unet(output)
         output = self.output_layer(output)
         output_feats = output.features[input_map.long()] # (N, K) the feature map
-        print("OUTPUT_FEATS:", output_feats.shape)
-        assert False
+        #print("OUTPUT_FEATS:", output_feats.shape)
 
-        ret['output_feats'] = output_feats
+        instance_labels_unique = torch.unique(instance_labels, sorted=True)
+        inside_instance_mask = torch.nonzero(instance_labels_unique > 1).view(-1)
+        instance_labels_unique = instance_labels_unique[inside_instance_mask]
+        num_instance = len(instance_labels_unique)
+        instances_feat = torch.zeros(num_instance, 16).cuda()
+        label_num = 0
+        for label in instance_labels_unique:
+            point_mask = torch.nonzero(instance_mask[:, label]).view(-1)
+            # print("LABEL:", label)
+            # print("POINT_MASK:", point_mask.shape)
+            if list(point_mask.shape)[0] > 1:
+                instance_feat = output_feats[point_mask]          # (npoint, K)
+                #print("INSTANCE_FEAT:", instance_feat.shape)
+                instance_feat = instance_feat.transpose(0, 1)
+                instance_feat = instance_feat.unsqueeze(0).unsqueeze(2)  # (1, K, 1, npoint)
+                instance_feat = self.mlp_module(instance_feat)           # (1, K, 1, npoint)
+                instance_feat = F.max_pool2d(
+                    instance_feat, kernel_size=[1, instance_feat.shape[3]]
+                )                                                       # (1, K, 1, 1)
+                #print("INSTANCE_FEAT:", instance_feat.shape)
+                instances_feat[label_num, :] = instance_feat.squeeze(0).squeeze(-1).squeeze(-1)
+                label_num += 1
+            else:
+                instance_feat = output_feats[point_mask]
+                instance_feat = self.mlp(instance_feat)
+                instances_feat[label_num, :] = instance_feat.squeeze(0)
+                label_num += 1
+
+        ret['instance_feats'] = instances_feat
+        '''
         #### semantic segmentation
         semantic_scores = self.linear(output_feats)   # (N, nClass), float
         semantic_preds = semantic_scores.max(1)[1]    # (N), long
@@ -321,14 +356,14 @@ class PointGroup(nn.Module):
             proposals_offset_shift += proposals_offset[-1]
             proposals_idx = torch.cat((proposals_idx, proposals_idx_shift), dim=0)
             proposals_offset = torch.cat((proposals_offset, proposals_offset_shift[1:]))
-            '''
+            
             print("PROPOSALS_IDX:", proposals_idx.shape)
             print(proposals_idx)
             print("PROPOSALS_OFFSET:", proposals_offset.shape)
             print(proposals_offset)
             assert False
-            '''
-            '''
+            
+
             #### proposals voxelization again
             input_feats, inp_map = self.clusters_voxelization(proposals_idx, proposals_offset, output_feats, coords, self.score_fullscale, self.score_scale, self.mode)
 
@@ -338,27 +373,39 @@ class PointGroup(nn.Module):
             score_feats = score.features[inp_map.long()] # (sumNPoint, C)
             score_feats = pointgroup_ops.roipool(score_feats, proposals_offset.cuda())  # (nProposal, C)
             scores = self.score_linear(score_feats)  # (nProposal, 1)
-            '''
-            # proposals_ids (sumNPoint, 2)
+
+            
+            # proposals_idx (sumNPoint, 2)
             # coords (N, 3)
             # output_feats (N, K)
-            feat = torch.cat((coords, output_feats), 1)
+            feat = torch.cat((coords, output_feats), 1)           # (npoints, 19)
+            feat = feat.transpose(0, 1)
+            feat = feat.unsqueeze(0).unsqueeze(2)                 # (1, 19, 1, npoints)
             proposal_num = proposals_offset.shape[0] - 1
-            proposals_feat = torch.zeros(proposal_num, 16) # 16 = output_feats.shape[1]
-            points_mask = proposals_ids[:, 1]
+            proposals_feat = torch.zeros(proposal_num, 16).cuda() # 16 = output_feats.shape[1]
+            points_mask = proposals_idx[:, 1]
             clusters_mask = proposals_idx[:, 0]
+            #print("CLUSTERS_MASK:", clusters_mask)
+            #print("PROPOSAL_NUM:", proposal_num)
             for proposal_idx in range(proposal_num):
-                cluster_mask = torch.nonzero(clusters_mask != proposal_idx).view(-1)
-                point_mask = points_mask[cluster_mask]
-                proposal_feat = feat[point_mask].transpose().unsqueeze(1).unsqueeze(0)    # (1, 19, 1, npoint)
-                proposal_feat = self.mlp_module(proposal_feat)                 # (1, 16, 1, npoint)
-                proposal_feat = F.maxpool_2d(
+                cluster_mask = torch.nonzero(clusters_mask == proposal_idx).view(-1)
+                point_mask = points_mask[cluster_mask].long()
+                proposal_feat = feat[point_mask].transpose(0, 1)     # (19, npoint)
+                #print("PROPOSAL_FEAT:", proposal_feat.shape)
+                proposal_feat = proposal_feat.unsqueeze(0).unsqueeze(2) # (1, 19, 1, npoint)
+                proposal_feat = self.mlp_module(proposal_feat)          # (1, 16, 1, npoint)
+                
+                proposal_feat = F.max_pool2d(
                     proposal_feat, kernel_size=[1, proposal_feat.shape[3]]
-                )                                                              # (1, 16, 1)
-                proposals_feat[proposal_idx, :] = proposal_feat.squeeze(0).squeeze(-1)
+                )                                                              # (1, 16, 1, 1)
+                proposals_feat[proposal_idx, :] = proposal_feat.squeeze(0).squeeze(-1).squeeze(-1)
+
 
             scores = self.score_linear(proposals_feat)
+            
+
             ret['proposal_scores'] = (scores, proposals_idx, proposals_offset)
+            '''
 
         return ret
 

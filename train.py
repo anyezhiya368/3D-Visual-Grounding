@@ -4,6 +4,7 @@ Written by Li Jiang
 '''
 
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 import time, sys, os, random
 from tensorboardX import SummaryWriter
@@ -123,8 +124,13 @@ def eval_epoch(val_loader, model, model_fn, epoch):
             if k in visual_dict.keys():
                 writer.add_scalar(k + '_eval', am_dict[k].avg, epoch)
 
+def force_cudnn_initialization():
+    s = 32
+    dev = torch.device('cuda')
+    torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
 
 if __name__ == '__main__':
+    #force_cudnn_initialization()
     ##### init
     init()
 
@@ -144,10 +150,12 @@ if __name__ == '__main__':
         exit(0)
 
     model = Network(cfg)
+    #print('#classifier parameters: {}'.format(sum([x.nelement() for x in model.parameters()])))
 
     use_cuda = torch.cuda.is_available()
     logger.info('cuda available: {}'.format(use_cuda))
     assert use_cuda
+    model = model.to('cpu')
     model = model.cuda()
 
     # logger.info(model)

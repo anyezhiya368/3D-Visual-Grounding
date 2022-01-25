@@ -3,6 +3,7 @@ PointGroup train.py
 Written by Li Jiang
 '''
 
+import random
 import torch
 import torch.optim as optim
 import time, sys, os, random
@@ -77,6 +78,100 @@ def gitter_feat(refer_mask, feats, v2p_map, mode, voxel_feats, voxel_coords):
 
     return voxel_feats_aug, voxel_coords_aug
 
+def compute_bbox(coords):
+    # :param coords (npoint, 3) float32 cuda
+    # return bbox (6) float32 cuda
+    bbox = torch.zeros(6).cuda()
+    max_xyz = torch.max(coords, 0).values
+    min_xyz = torch.min(coords, 0).values
+    center_xyz = (max_xyz + min_xyz) / 2
+    bbox[:3] = center_xyz
+    scale = max_xyz - min_xyz
+    bbox[3:6] = scale
+    return bbox
+
+def gitter_bbox(bbox):
+    # :param bbox (6) float32 cuda
+    # return bbox (6) float32 cuda
+    gittered_bbox = bbox.clone()
+    x_scale = bbox[3] / 20
+    y_scale = bbox[4] / 20
+    z_scale = bbox[5] / 20
+    while True:
+        x_offset = random.gauss(0, x_scale / 2)
+        if x_offset < x_scale and x_offset > (-1) * x_scale:
+            break
+    while True:
+        y_offset = random.gauss(0, y_scale / 2)
+        if y_offset < y_scale and y_offset > (-1) * y_scale:
+            break
+    while True:
+        z_offset = random.gauss(0, z_scale / 2)
+        if z_offset < z_scale and z_offset > (-1) * z_scale:
+            break
+    gittered_bbox[0] += x_scale
+    gittered_bbox[1] += y_scale
+    gittered_bbox[2] += z_scale
+    while True:
+        scale_factor = random.gauss(0, 2.5)
+        if scale_factor < 5 and scale_factor > -5:
+            break
+    gittered_bbox[3:6] *= (1 + scale_factor / 100)
+    return gittered_bbox
+
+def inside_bbox(coords, bbox, epsilon = 1e-6):
+    # :param coords (N, 3) float32 cuda
+    # :param bbox (6) float32 cuda
+    x = coords[:, 0]
+    y = coords[:, 1]
+    z = coords[:, 2]
+    mask1 = torch.gt(x, bbox[0] - bbox[3] / 2 - epsilon)
+    mask2 = torch.lt(x, bbox[0] + bbox[3] / 2 + epsilon)
+    mask3 = torch.gt(y, bbox[1] - bbox[4] / 2 - epsilon)
+    mask4 = torch.lt(y, bbox[1] + bbox[4] / 2 + epsilon)
+    mask5 = torch.gt(z, bbox[2] - bbox[5] / 2 - epsilon)
+    mask6 = torch.lt(z, bbox[2] + bbox[5] / 2 + epsilon)
+    return mask1 & mask2 & mask3 & mask4 & mask5 & mask6
+
+def compute_iou(mask1, mask2):
+    # :param mask1 (N) boolean cuda
+    # :param mask2 (N) boolean cuda
+    i_mask = mask1 & mask2
+    u_mask = mask1 | mask2
+    i_len = list(torch.nonzero(i_mask).view(-1).shape)[0]
+    u_len = list(torch.nonzero(u_mask).view(-1).shape)[0]
+    return i_len / u_len
+
+def generate_random_mask(coords):
+    # :params coords(N, 3) float32 cuda
+    # :params mask(N) boolean cuda
+    while True:
+        # generate a random bbox
+        bbox = torch.zeros(6).cuda()
+        max_xyz = torch.max(coords, 0).values
+        min_xyz = torch.min(coords, 0).values
+        center = (max_xyz + min_xyz) / 2
+        scale = max_xyz - min_xyz
+        for index in range(3):
+            center_point = center[index].item()
+            scale_point = scale[index].item() / 2
+            while True:
+                center_offset = random.gauss(0, scale_point / 2)
+                if center_offset < scale_point and center_offset > (-1) * scale_point:
+                    bbox[index] = center_point + center_offset
+                    break
+            while True:
+                new_scale = random.gauss(0, scale_point / 2)
+                if new_scale < scale_point and new_scale > 0:
+                    bbox[index + 3] = new_scale
+                    break
+        point_mask = inside_bbox(coords, bbox)
+        instance_mask = torch.nonzero(point_mask).view(-1)
+        # print("INSTANCE_MASK:", instance_mask.shape)
+        if list(instance_mask.shape)[0] > 1:
+            break
+    return point_mask
+
 def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
     iter_time = utils.AverageMeter()
     data_time = utils.AverageMeter()
@@ -90,6 +185,7 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
 
     start_epoch = time.time()
     end = time.time()
+    loss_print = 0
     for i, batch in enumerate(train_loader):
         data_time.update(time.time() - end)
         torch.cuda.empty_cache()
@@ -109,6 +205,7 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         labels = batch['labels'].cuda()                        # (N), long, cuda
         instance_labels = batch['instance_labels'].cuda()      # (N), long, cuda, 0~total_nInst, -100
 
+
         instance_info = batch['instance_info'].cuda()          # (N, 9), float32, cuda, (meanxyz, minxyz, maxxyz)
         instance_pointnum = batch['instance_pointnum'].cuda()  # (total_nInst), int, cuda
 
@@ -125,13 +222,111 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         ##### prepare augmentated input
 
         '''some data augmentation should be implemented here'''
-        '''feature gitter for the cropped area'''
+        '''
+        instance_labels_cpu = instance_labels.int().to('cpu')
+        object_idxs = torch.nonzero(instance_labels_cpu > 1).view(-1)  # index for all the points contained inside an object
 
-        #refer_mask = batch['refer_mask'] # (N) a boolean mask indicating whether the point is inside the referred objedt
-        #voxel_feats_aug, voxel_coords_aug = gitter_feat(refer_mask, feats, v2p_map, cfg.mode, voxel_feats, voxel_coords)
+        batch_idxs_ = coords[:, 0].int()[object_idxs]
+        batch_offsets_ = utils.get_batch_offsets(batch_idxs_, input_.batch_size)
+        coords_ = coords_float[object_idxs]
+        idx, start_len = pointgroup_ops.ballquery_batch_p(coords_, batch_idxs_, batch_offsets_, cfg.cluster_radius,
+                                                          cfg.cluster_meanActive)
+        proposals_idx, proposals_offset = pointgroup_ops.bfs_cluster(instance_labels_cpu, idx.cpu(), start_len.cpu(),
+                                                                     cfg.cluster_npoint_thre)
+        proposals_idx[:, 1] = object_idxs[proposals_idx[:, 1].long()].int()
+        print("PROPOSALS_IDX:", proposals_idx.shape)
+        print(proposals_idx)
+        # proposals_idx: (sumNPoint, 2), int, dim 0 for cluster_id, dim 1 for corresponding point idxs in N
+        # proposals_offset: (nProposal + 1), int
 
+        instance_labels = torch.zeros(coords_float.shape[0]).long()
+        cluster_idx = proposals_idx[:, 0].long() + 2
+        point_idx = proposals_idx[:, 1].long()
+        instance_labels[point_idx]  = cluster_idx
+        instance_labels = instance_labels.cuda()
+        max = torch.max(instance_labels)
+        min = torch.min(instance_labels)
+        print("MAX:", max)
+        print("MIN:", min)
+        print("INSTANCE_LABELS:", instance_labels.shape)
+        print(instance_labels)
+        mask_4_instance_labels = torch.nonzero(instance_labels > 1).view(-1)
+        instance_labels_filtered = instance_labels[mask_4_instance_labels]
+        
+        instance_labels_unique = torch.unique(instance_labels_filtered, sorted=True)
+        mask_dim = torch.max(instance_labels_unique).item() + 1
+        instance_mask = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+        instance_mask_aug = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+
+
+
+        # instance_labels (N) long cuda
+        # coords_float (N, 3) float32 cuda
+        # print("NUM_POINTS:", coords_float.shape[0])
+        '''
+
+        filter_mask = torch.nonzero(instance_labels > 1).view(-1)
+        instance_labels_filtered = instance_labels[filter_mask]
+        instance_labels_unique = torch.unique(instance_labels_filtered, sorted=True)
+        mask_dim = torch.max(instance_labels).item() + 1
+        instance_mask = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+        instance_mask_aug = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+
+
+        instance_mask_aug2 = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+
+        ablation_mask = torch.zeros(len(instance_labels_unique)).long().cuda()
+        label_num = 0
+        for label in instance_labels_unique:
+            instance_point_mask = torch.nonzero(instance_labels == label).view(-1)
+            if list(instance_point_mask.shape)[0] < 10:
+                instance_mask_aug[instance_point_mask, label] = 1
+                instance_mask[instance_point_mask, label] = 1
+                instance_mask_sp = generate_random_mask(coords_float)
+                instance_mask_sp = torch.nonzero(instance_mask_sp).view(-1)
+                instance_mask_aug2[instance_mask_sp, label] = 1
+                # print("LABEL:", label)
+                # print("INSTANCE_MASK:", instance_point_mask.shape)
+            else:
+                while True:
+                    instance_coords = coords_float[instance_point_mask]
+                    instance_bbox = compute_bbox(instance_coords)
+                    instance_box_mask = inside_bbox(coords_float, instance_bbox)
+                    instance_bbox_gittered = gitter_bbox(instance_bbox)
+                    instance_mask_gittered = inside_bbox(coords_float, instance_bbox_gittered)
+                    if list(instance_mask_gittered.shape)[0] > 0:
+                        break
+                iou = compute_iou(instance_box_mask, instance_mask_gittered)
+                if iou < 0.65:
+                    ablation_mask[label_num] = 1
+                label_num += 1
+                instance_mask_gittered = torch.nonzero(instance_mask_gittered).view(-1)
+                instance_mask_aug[instance_mask_gittered, label] = 1
+
+                while True:
+                    instance_mask_sp = generate_random_mask(coords_float)
+                    if compute_iou(instance_mask_sp, instance_box_mask) < 0.3:
+                        break
+                instance_mask_sp = torch.nonzero(instance_mask_sp).view(-1)
+                instance_mask_aug2[instance_mask_sp, label] = 1
+
+                instance_box_mask = torch.nonzero(instance_box_mask).view(-1)
+                instance_mask[instance_box_mask, label] = 1
+
+                # print("LABEL:", label)
+                # print("INSTANCE_MASK:", instance_point_mask.shape)
+                # print("BOX_NUM:", instance_box_mask.shape)
+                # print("GITTERED_BOX_NUM:", instance_mask_gittered.shape)
+                # print("IOU:", iou)
+        ablation_mask = torch.nonzero(ablation_mask == 0).view(-1)
+        if ablation_mask.shape == 0:
+            continue
+        # src = torch.ones(instance_labels.shape[0], 1).long()
+        # instance_labels_2d = instance_labels.clone()
+        # instance_labels_2d = instance_labels_2d.unsqueeze(-1).to('cpu')
+        # instance_mask = torch.zeros(instance_labels.shape[0], mask_dim, dtype=src.dtype).scatter_(1, instance_labels_2d, src)
         voxel_feats_aug = voxel_feats.clone()
-        voxel_coords_aug = voxel_coords * 0.95
+        voxel_coords_aug = voxel_coords.clone()
         input_aug = SparseConvTensor(voxel_feats_aug, voxel_coords_aug.int(), spatial_shape, cfg.batch_size)
 
         ##### momentum update
@@ -139,19 +334,26 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
           param_k.data = param_k.data.to(device) * m + param_q.data.to(device) * (1.00 - m)
 
         ##### forward
-        ret = model(input_, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch)
-        output_feats = ret['output_feats']
+        ret = model(input_, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, instance_labels, instance_mask)
+        output_feats = ret['instance_feats']
+        output_feats = output_feats[ablation_mask]
         output_feats = nn.functional.normalize(output_feats, dim=1)
 
-        retk = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch)
-        output_featsk = retk['output_feats']
-        output_featsk = nn.functional.normalize(output_featsk, dim=1)
+        retk1 = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, instance_labels, instance_mask_aug)
+        output_featsk1 = retk1['instance_feats']
+        output_featsk1 = output_featsk1[ablation_mask]
+        output_featsk1 = nn.functional.normalize(output_featsk1, dim=1)
 
+        retk2 = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, instance_labels, instance_mask_aug2)
+        output_featsk2 = retk2['instance_feats']
+        output_featsk2 = nn.functional.normalize(output_featsk2, dim=1)
+        #
+        output_featsk = torch.cat((output_featsk1, output_featsk2), 0)
         ##### sample
-        length = output_featsk.shape[0]
-        sel = np.random.choice(length, min(length, num_hn_samples), replace=False)
-        output_feats = output_feats[sel]
-        output_featsk = output_featsk[sel]
+        # length = min(output_feats.shape[0], output_featsk.shape[0])
+        # sel = np.random.choice(length, min(length, num_hn_samples), replace=False)
+        # output_feats = output_feats[sel]
+        # output_featsk = output_featsk[sel]
 
         logits = torch.mm(output_feats, output_featsk.transpose(1, 0))
         logits = logits.type(torch.float32)
@@ -183,9 +385,10 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
             (epoch, cfg.epochs, i + 1, len(train_loader), loss.item(),
              data_time.val, data_time.avg, iter_time.val, iter_time.avg, remain_time=remain_time))
         if (i == len(train_loader) - 1): print()
+        loss_print += loss.item()
 
 
-    logger.info("epoch: {}/{}, train loss: {:.4f}, time: {}s".format(epoch, cfg.epochs, loss, time.time() - start_epoch))
+    logger.info("epoch: {}/{}, train loss: {:.4f}, time: {}s".format(epoch, cfg.epochs, loss_print / len(train_loader), time.time() - start_epoch))
 
     utils.checkpoint_save(model, cfg.exp_path, cfg.config.split('/')[-1][:-5], epoch, cfg.save_freq, use_cuda)
 
