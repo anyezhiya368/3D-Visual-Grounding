@@ -234,8 +234,8 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         proposals_idx, proposals_offset = pointgroup_ops.bfs_cluster(instance_labels_cpu, idx.cpu(), start_len.cpu(),
                                                                      cfg.cluster_npoint_thre)
         proposals_idx[:, 1] = object_idxs[proposals_idx[:, 1].long()].int()
-        print("PROPOSALS_IDX:", proposals_idx.shape)
-        print(proposals_idx)
+        # print("PROPOSALS_IDX:", proposals_idx.shape)
+        # print(proposals_idx)
         # proposals_idx: (sumNPoint, 2), int, dim 0 for cluster_id, dim 1 for corresponding point idxs in N
         # proposals_offset: (nProposal + 1), int
 
@@ -244,12 +244,12 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         point_idx = proposals_idx[:, 1].long()
         instance_labels[point_idx]  = cluster_idx
         instance_labels = instance_labels.cuda()
-        max = torch.max(instance_labels)
-        min = torch.min(instance_labels)
-        print("MAX:", max)
-        print("MIN:", min)
-        print("INSTANCE_LABELS:", instance_labels.shape)
-        print(instance_labels)
+        # max = torch.max(instance_labels)
+        # min = torch.min(instance_labels)
+        # print("MAX:", max)
+        # print("MIN:", min)
+        # print("INSTANCE_LABELS:", instance_labels.shape)
+        # print(instance_labels)
         mask_4_instance_labels = torch.nonzero(instance_labels > 1).view(-1)
         instance_labels_filtered = instance_labels[mask_4_instance_labels]
         
@@ -263,8 +263,9 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         # instance_labels (N) long cuda
         # coords_float (N, 3) float32 cuda
         # print("NUM_POINTS:", coords_float.shape[0])
-        '''
 
+
+        '''
         filter_mask = torch.nonzero(instance_labels > 1).view(-1)
         instance_labels_filtered = instance_labels[filter_mask]
         instance_labels_unique = torch.unique(instance_labels_filtered, sorted=True)
@@ -285,13 +286,13 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
                 instance_mask_sp = generate_random_mask(coords_float)
                 instance_mask_sp = torch.nonzero(instance_mask_sp).view(-1)
                 instance_mask_aug2[instance_mask_sp, label] = 1
-                # print("LABEL:", label)
-                # print("INSTANCE_MASK:", instance_point_mask.shape)
+                print("LABEL:", label)
+                print("INSTANCE_MASK:", instance_point_mask.shape)
             else:
+                instance_coords = coords_float[instance_point_mask]
+                instance_bbox = compute_bbox(instance_coords)
+                instance_box_mask = inside_bbox(coords_float, instance_bbox)
                 while True:
-                    instance_coords = coords_float[instance_point_mask]
-                    instance_bbox = compute_bbox(instance_coords)
-                    instance_box_mask = inside_bbox(coords_float, instance_bbox)
                     instance_bbox_gittered = gitter_bbox(instance_bbox)
                     instance_mask_gittered = inside_bbox(coords_float, instance_bbox_gittered)
                     if list(instance_mask_gittered.shape)[0] > 0:
@@ -313,10 +314,9 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
                 instance_box_mask = torch.nonzero(instance_box_mask).view(-1)
                 instance_mask[instance_box_mask, label] = 1
 
-                # print("LABEL:", label)
-                # print("INSTANCE_MASK:", instance_point_mask.shape)
-                # print("BOX_NUM:", instance_box_mask.shape)
-                # print("GITTERED_BOX_NUM:", instance_mask_gittered.shape)
+                print("LABEL:", label)
+                print("INSTANCE_MASK:", instance_box_mask.shape)
+                print("INSTANCE_MASK_GITTERED:", instance_mask_gittered.shape)
                 # print("IOU:", iou)
         ablation_mask = torch.nonzero(ablation_mask == 0).view(-1)
         if ablation_mask.shape == 0:
@@ -347,7 +347,7 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         retk2 = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, instance_labels, instance_mask_aug2)
         output_featsk2 = retk2['instance_feats']
         output_featsk2 = nn.functional.normalize(output_featsk2, dim=1)
-        #
+
         output_featsk = torch.cat((output_featsk1, output_featsk2), 0)
         ##### sample
         # length = min(output_feats.shape[0], output_featsk.shape[0])
@@ -392,7 +392,7 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
 
     utils.checkpoint_save(model, cfg.exp_path, cfg.config.split('/')[-1][:-5], epoch, cfg.save_freq, use_cuda)
 
-
+    writer.add_scalar('loss_pretrain', loss_print / len(train_loader), epoch)
 
 if __name__ == '__main__':
     ##### init

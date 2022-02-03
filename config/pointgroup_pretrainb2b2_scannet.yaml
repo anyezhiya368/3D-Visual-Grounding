@@ -1,4 +1,4 @@
-# with a larger iou, batch_size = 8
+# with a larger iou, gt
 GENERAL:
   task: train  # train, test
   manual_seed: 123
@@ -15,7 +15,7 @@ DATA:
 
   input_channel: 3
   scale: 50   # voxel_size = 1 / scale, scale 50(2cm)
-  batch_size: 8
+  batch_size: 4
   full_scale: [128, 512]
   max_npoint: 250000
   mode: 4 # 4=mean
@@ -29,11 +29,11 @@ STRUCTURE:
   use_coords: True
 
 TRAIN:
-  epochs: 50
+  epochs: 100
   train_workers: 16 # data loader workers
   optim: Adam # Adam or SGD
   lr: 0.001
-  step_epoch: 384
+  step_epoch: 100
   multiplier: 0.5
   momentum: 0.9
   weight_decay: 0.0001

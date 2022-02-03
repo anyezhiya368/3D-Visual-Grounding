@@ -1,3 +1,4 @@
+# epoch 336 0.334 0.544 0.701
 GENERAL:
   task: train  # train, test
   manual_seed: 123
@@ -28,7 +29,7 @@ STRUCTURE:
   use_coords: True
 
 TRAIN:
-  epochs: 100
+  epochs: 384
   train_workers: 16 # data loader workers
   optim: Adam # Adam or SGD
   lr: 0.001

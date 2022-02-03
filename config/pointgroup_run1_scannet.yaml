@@ -1,3 +1,4 @@
+# epoch 336 0.334 0.544 0.701
 GENERAL:
   task: train  # train, test
   manual_seed: 123
