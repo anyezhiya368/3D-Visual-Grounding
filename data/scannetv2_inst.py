@@ -38,12 +38,13 @@ class Dataset:
     def trainLoader(self):
         train_file_names = sorted(glob.glob(os.path.join(self.data_root, self.dataset, 'train', '*' + self.filename_suffix)))
         self.train_files = [torch.load(i) for i in train_file_names]
+        self.train_file_names = train_file_names
 
         logger.info('Training samples: {}'.format(len(self.train_files)))
 
         train_set = list(range(len(self.train_files)))
         self.train_data_loader = DataLoader(train_set, batch_size=self.batch_size, collate_fn=self.trainMerge, num_workers=self.train_workers,
-                                            shuffle=True, sampler=None, drop_last=True, pin_memory=True)
+                                            shuffle=True, sampler=None, drop_last=False, pin_memory=True)
 
     def valLoader(self):
         val_file_names = sorted(glob.glob(os.path.join(self.data_root, self.dataset, 'val', '*' + self.filename_suffix)))
@@ -142,7 +143,7 @@ class Dataset:
             offset = np.clip(full_scale - room_range + 0.001, None, 0) * np.random.rand(3)
             xyz_offset = xyz + offset
             valid_idxs = (xyz_offset.min(1) >= 0) * ((xyz_offset < full_scale).sum(1) == 3)
-            full_scale[:2] -= 32
+            full_scale[:2] -= 16
 
         return xyz_offset, valid_idxs
 
@@ -178,16 +179,18 @@ class Dataset:
 
             ### scale
             xyz = xyz_middle * self.scale
+            #print("*********************:", self.scale)
 
             ### elastic
-            xyz = self.elastic(xyz, 6 * self.scale // 50, 40 * self.scale / 50)
-            xyz = self.elastic(xyz, 20 * self.scale // 50, 160 * self.scale / 50)
+            # xyz = self.elastic(xyz, 6 * self.scale // 50, 40 * self.scale / 50)
+            # xyz = self.elastic(xyz, 20 * self.scale // 50, 160 * self.scale / 50)
 
             ### offset
             xyz -= xyz.min(0)
 
             ### crop
             xyz, valid_idxs = self.crop(xyz)
+            #print(self.train_file_names[idx], '\t', valid_idxs.sum())
 
             xyz_middle = xyz_middle[valid_idxs]
             xyz = xyz[valid_idxs]
@@ -209,6 +212,7 @@ class Dataset:
             locs.append(torch.cat([torch.LongTensor(xyz.shape[0], 1).fill_(i), torch.from_numpy(xyz).long()], 1))
             locs_float.append(torch.from_numpy(xyz_middle))
             feats.append(torch.from_numpy(rgb) + torch.randn(3) * 0.1)
+            #feats.append(torch.from_numpy(rgb))
             labels.append(torch.from_numpy(label))
             instance_labels.append(torch.from_numpy(instance_label))
 

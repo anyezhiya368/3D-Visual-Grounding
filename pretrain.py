@@ -4,6 +4,7 @@ Written by Li Jiang
 '''
 
 import random
+import math
 import torch
 import torch.optim as optim
 import time, sys, os, random
@@ -20,6 +21,7 @@ from lib.pointgroup_ops.functions import pointgroup_ops
 m = 0.95
 num_hn_samples = 4096
 device = torch.device("cuda:0" if torch.cuda.is_available() else 'cpu')
+NUM_NEG = 150
 
 def random_flip( points, probability=0.5):
     x = np.random.choice(
@@ -172,7 +174,20 @@ def generate_random_mask(coords):
             break
     return point_mask
 
+def dataAugment(xyz, jitter=False, flip=False, rot=False):
+    m = np.eye(3)
+    if jitter:
+        m += np.random.randn(3, 3) * 0.1
+    if flip:
+        m[0][0] *= np.random.randint(0, 2) * 2 - 1  # flip x randomly
+    if rot:
+        theta = np.random.rand() * 2 * math.pi
+        m = np.matmul(m, [[math.cos(theta), math.sin(theta), 0], [-math.sin(theta), math.cos(theta), 0], [0, 0, 1]])  # rotation
+    return np.matmul(xyz, m)
+
 def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
+    memory_bank = []
+    accuracy = 0
     iter_time = utils.AverageMeter()
     data_time = utils.AverageMeter()
     am_dict = {}
@@ -212,8 +227,18 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         batch_offsets = batch['offsets'].cuda()                # (B + 1), int, cuda
         spatial_shape = batch['spatial_shape']
 
+        # batch_idx = coords[:, 0]
+        feats_aug = feats.clone()
+        # feats_aug_offset = np.random.randn(feats_aug.shape[0], feats_aug.shape[1]) * 0.1
+        # feats_aug += torch.from_numpy(feats_aug_offset).cuda()
+        coords_float_aug = coords_float.clone()
+        coords_float_aug = coords_float.to('cpu').numpy()
+        coords_float_aug = dataAugment(coords_float_aug, True, False, False)
+        coords_float_aug = torch.from_numpy(coords_float_aug).cuda()
+
         if cfg.use_coords:
             feats = torch.cat((feats, coords_float), 1)
+            feats_aug = torch.cat((feats_aug, coords_float_aug), 1).float()
 
         voxel_feats = pointgroup_ops.voxelization(feats, v2p_map, cfg.mode)  # (M, C), float, cuda
 
@@ -222,110 +247,90 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         ##### prepare augmentated input
 
         '''some data augmentation should be implemented here'''
-        '''
-        instance_labels_cpu = instance_labels.int().to('cpu')
-        object_idxs = torch.nonzero(instance_labels_cpu > 1).view(-1)  # index for all the points contained inside an object
 
-        batch_idxs_ = coords[:, 0].int()[object_idxs]
-        batch_offsets_ = utils.get_batch_offsets(batch_idxs_, input_.batch_size)
-        coords_ = coords_float[object_idxs]
-        idx, start_len = pointgroup_ops.ballquery_batch_p(coords_, batch_idxs_, batch_offsets_, cfg.cluster_radius,
-                                                          cfg.cluster_meanActive)
-        proposals_idx, proposals_offset = pointgroup_ops.bfs_cluster(instance_labels_cpu, idx.cpu(), start_len.cpu(),
-                                                                     cfg.cluster_npoint_thre)
-        proposals_idx[:, 1] = object_idxs[proposals_idx[:, 1].long()].int()
-        # print("PROPOSALS_IDX:", proposals_idx.shape)
-        # print(proposals_idx)
-        # proposals_idx: (sumNPoint, 2), int, dim 0 for cluster_id, dim 1 for corresponding point idxs in N
-        # proposals_offset: (nProposal + 1), int
+        # instance_labels_cpu = instance_labels.int().to('cpu')
+        # object_idxs = torch.nonzero(instance_labels_cpu > 1).view(-1)  # index for all the points contained inside an object
+        #
+        # batch_idxs_ = coords[:, 0].int()[object_idxs]
+        # batch_offsets_ = utils.get_batch_offsets(batch_idxs_, input_.batch_size)
+        # coords_ = coords_float[object_idxs]
+        # idx, start_len = pointgroup_ops.ballquery_batch_p(coords_, batch_idxs_, batch_offsets_, cfg.cluster_radius,
+        #                                                   cfg.cluster_meanActive)
+        # proposals_idx, proposals_offset = pointgroup_ops.bfs_cluster(instance_labels_cpu, idx.cpu(), start_len.cpu(),
+        #                                                              cfg.cluster_npoint_thre)
+        # proposals_idx[:, 1] = object_idxs[proposals_idx[:, 1].long()].int()
+        # # proposals_idx: (sumNPoint, 2), int, dim 0 for cluster_id, dim 1 for corresponding point idxs in N
+        # # proposals_offset: (nProposal + 1), int
+        #
+        # instance_labels = torch.zeros(coords_float.shape[0]).long()
+        # cluster_idx = proposals_idx[:, 0].long() + 2
+        # point_idx = proposals_idx[:, 1].long()
+        # instance_labels[point_idx]  = cluster_idx
+        # instance_labels = instance_labels.cuda()
+        # mask_4_instance_labels = torch.nonzero(instance_labels > 1).view(-1)
+        # instance_labels_filtered = instance_labels[mask_4_instance_labels]
+        # instance_labels_unique = torch.unique(instance_labels_filtered, sorted=True)
+        #
+        # num_instance = min(torch.max(instance_labels_unique).item() - 1, 32)
+        # instance_labels_unique_numpy = instance_labels_unique.to('cpu').numpy()
+        # instance_labels_unique = np.random.choice(instance_labels_unique_numpy, num_instance, replace=False)
+        # instance_labels_unique = torch.from_numpy(instance_labels_unique).cuda()
+        #
+        # mask_dim = torch.max(instance_labels_unique).item() + 1
+        # instance_mask = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+        # instance_mask_aug = torch.zeros(coords_float.shape[0], mask_dim).cuda()
 
-        instance_labels = torch.zeros(coords_float.shape[0]).long()
-        cluster_idx = proposals_idx[:, 0].long() + 2
-        point_idx = proposals_idx[:, 1].long()
-        instance_labels[point_idx]  = cluster_idx
-        instance_labels = instance_labels.cuda()
-        # max = torch.max(instance_labels)
-        # min = torch.min(instance_labels)
-        # print("MAX:", max)
-        # print("MIN:", min)
-        # print("INSTANCE_LABELS:", instance_labels.shape)
-        # print(instance_labels)
-        mask_4_instance_labels = torch.nonzero(instance_labels > 1).view(-1)
-        instance_labels_filtered = instance_labels[mask_4_instance_labels]
-        
-        instance_labels_unique = torch.unique(instance_labels_filtered, sorted=True)
-        mask_dim = torch.max(instance_labels_unique).item() + 1
-        instance_mask = torch.zeros(coords_float.shape[0], mask_dim).cuda()
-        instance_mask_aug = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+        #
+        #
+        # # instance_labels (N) long cuda
+        # # coords_float (N, 3) float32 cuda
+        # # print("NUM_POINTS:", coords_float.shape[0])
+        #
+        #
+        #
+        # filter_mask = torch.nonzero(instance_labels > 1).view(-1)
+        # instance_labels_filtered = instance_labels[filter_mask]
+        # instance_labels_unique = torch.unique(instance_labels_filtered, sorted=True)
+        # num_instance = min(torch.max(instance_labels_unique).item() - 1, 32)
+        # instance_labels_unique_numpy = instance_labels_unique.to('cpu').numpy()
+        # instance_labels_unique = np.random.choice(instance_labels_unique_numpy, num_instance, replace=False)
+        # instance_labels_unique = torch.from_numpy(instance_labels_unique).cuda()
+        #
+        # mask_dim = torch.max(instance_labels_unique).item() + 1
+        # instance_mask = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+        # instance_mask_aug = torch.zeros(coords_float.shape[0], mask_dim).cuda()
+        #
+        # ablation_mask = torch.zeros(len(instance_labels_unique)).long().cuda()
+        # label_num = 0
+        # for label in instance_labels_unique:
+        #     instance_point_mask = torch.nonzero(instance_labels == label).view(-1)
+        #     if list(instance_point_mask.shape)[0] < 10:
+        #         instance_mask[instance_point_mask, label] = 1
+        #         instance_mask_aug[instance_point_mask, label] = 1
+        #     else:
+        #         instance_coords = coords_float[instance_point_mask]
+        #         instance_bbox = compute_bbox(instance_coords)
+        #         instance_box_mask = inside_bbox(coords_float, instance_bbox)
+        #         while True:
+        #             instance_bbox_gittered = gitter_bbox(instance_bbox)
+        #             instance_mask_gittered = inside_bbox(coords_float, instance_bbox_gittered)
+        #             instance_idx_gittered = torch.nonzero(instance_mask_gittered).view(-1)
+        #             if list(instance_idx_gittered.shape)[0] > 0:
+        #                 break
+        #         iou = compute_iou(instance_box_mask, instance_mask_gittered)
+        #         if iou < 0.65:
+        #             ablation_mask[label_num] = 1
+        #         label_num += 1
+        #         instance_mask_aug[instance_idx_gittered, label] = 1
+        #
+        #         instance_box_mask = torch.nonzero(instance_box_mask).view(-1)
+        #         instance_mask[instance_box_mask, label] = 1
+        #
+        # ablation_mask = torch.nonzero(ablation_mask == 0).view(-1)
+        # if ablation_mask.shape == 0:
+        #     continue
 
-
-
-        # instance_labels (N) long cuda
-        # coords_float (N, 3) float32 cuda
-        # print("NUM_POINTS:", coords_float.shape[0])
-
-
-        '''
-        filter_mask = torch.nonzero(instance_labels > 1).view(-1)
-        instance_labels_filtered = instance_labels[filter_mask]
-        instance_labels_unique = torch.unique(instance_labels_filtered, sorted=True)
-        mask_dim = torch.max(instance_labels).item() + 1
-        instance_mask = torch.zeros(coords_float.shape[0], mask_dim).cuda()
-        instance_mask_aug = torch.zeros(coords_float.shape[0], mask_dim).cuda()
-
-
-        instance_mask_aug2 = torch.zeros(coords_float.shape[0], mask_dim).cuda()
-
-        ablation_mask = torch.zeros(len(instance_labels_unique)).long().cuda()
-        label_num = 0
-        for label in instance_labels_unique:
-            instance_point_mask = torch.nonzero(instance_labels == label).view(-1)
-            if list(instance_point_mask.shape)[0] < 10:
-                instance_mask_aug[instance_point_mask, label] = 1
-                instance_mask[instance_point_mask, label] = 1
-                instance_mask_sp = generate_random_mask(coords_float)
-                instance_mask_sp = torch.nonzero(instance_mask_sp).view(-1)
-                instance_mask_aug2[instance_mask_sp, label] = 1
-                print("LABEL:", label)
-                print("INSTANCE_MASK:", instance_point_mask.shape)
-            else:
-                instance_coords = coords_float[instance_point_mask]
-                instance_bbox = compute_bbox(instance_coords)
-                instance_box_mask = inside_bbox(coords_float, instance_bbox)
-                while True:
-                    instance_bbox_gittered = gitter_bbox(instance_bbox)
-                    instance_mask_gittered = inside_bbox(coords_float, instance_bbox_gittered)
-                    if list(instance_mask_gittered.shape)[0] > 0:
-                        break
-                iou = compute_iou(instance_box_mask, instance_mask_gittered)
-                if iou < 0.65:
-                    ablation_mask[label_num] = 1
-                label_num += 1
-                instance_mask_gittered = torch.nonzero(instance_mask_gittered).view(-1)
-                instance_mask_aug[instance_mask_gittered, label] = 1
-
-                while True:
-                    instance_mask_sp = generate_random_mask(coords_float)
-                    if compute_iou(instance_mask_sp, instance_box_mask) < 0.3:
-                        break
-                instance_mask_sp = torch.nonzero(instance_mask_sp).view(-1)
-                instance_mask_aug2[instance_mask_sp, label] = 1
-
-                instance_box_mask = torch.nonzero(instance_box_mask).view(-1)
-                instance_mask[instance_box_mask, label] = 1
-
-                print("LABEL:", label)
-                print("INSTANCE_MASK:", instance_box_mask.shape)
-                print("INSTANCE_MASK_GITTERED:", instance_mask_gittered.shape)
-                # print("IOU:", iou)
-        ablation_mask = torch.nonzero(ablation_mask == 0).view(-1)
-        if ablation_mask.shape == 0:
-            continue
-        # src = torch.ones(instance_labels.shape[0], 1).long()
-        # instance_labels_2d = instance_labels.clone()
-        # instance_labels_2d = instance_labels_2d.unsqueeze(-1).to('cpu')
-        # instance_mask = torch.zeros(instance_labels.shape[0], mask_dim, dtype=src.dtype).scatter_(1, instance_labels_2d, src)
-        voxel_feats_aug = voxel_feats.clone()
+        voxel_feats_aug = pointgroup_ops.voxelization(feats_aug, v2p_map, cfg.mode)
         voxel_coords_aug = voxel_coords.clone()
         input_aug = SparseConvTensor(voxel_feats_aug, voxel_coords_aug.int(), spatial_shape, cfg.batch_size)
 
@@ -334,21 +339,44 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
           param_k.data = param_k.data.to(device) * m + param_q.data.to(device) * (1.00 - m)
 
         ##### forward
-        ret = model(input_, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, instance_labels, instance_mask)
-        output_feats = ret['instance_feats']
-        output_feats = output_feats[ablation_mask]
+        ret = model(input_, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, v2p_map, instance_labels)
+        output_feats = ret['output_feats']
+        #output_feats = output_feats[ablation_mask]
         output_feats = nn.functional.normalize(output_feats, dim=1)
 
-        retk1 = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, instance_labels, instance_mask_aug)
-        output_featsk1 = retk1['instance_feats']
-        output_featsk1 = output_featsk1[ablation_mask]
-        output_featsk1 = nn.functional.normalize(output_featsk1, dim=1)
+        retk1 = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, v2p_map, instance_labels)
+        output_featsk1 = retk1['output_feats']
+        #output_featsk1 = output_featsk1[ablation_mask]
+        output_featsk = nn.functional.normalize(output_featsk1, dim=1)
 
-        retk2 = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, instance_labels, instance_mask_aug2)
-        output_featsk2 = retk2['instance_feats']
-        output_featsk2 = nn.functional.normalize(output_featsk2, dim=1)
+        if len(memory_bank) == 0:
+            memory_bank.append(output_featsk)
+        else:
+            num_neg = NUM_NEG - output_featsk.shape[0]
+            saved_neg = memory_bank[0]
+            memory_bank = []
+            if saved_neg.shape[0] < num_neg:
+                output_featsk = torch.cat((output_featsk, saved_neg), 0)
+            else:
+                neg_in = saved_neg[:num_neg, :]
+                output_featsk = torch.cat((output_featsk, neg_in), 0)
+                neg_remain = saved_neg[num_neg:, :]
+                memory_bank.append(neg_remain)
 
-        output_featsk = torch.cat((output_featsk1, output_featsk2), 0)
+
+        # num_random_instance = NUM_NEG - output_featsk1.shape[0]
+        # instance_labels_aug2 = torch.arange(2, num_random_instance + 2).long().cuda()
+        # instance_mask_aug2 = torch.zeros(coords_float.shape[0], num_random_instance + 2)
+        # for label in instance_labels_aug2:
+        #     instance_mask_sp = generate_random_mask(coords_float)
+        #     instance_mask_sp = torch.nonzero(instance_mask_sp).view(-1)
+        #     instance_mask_aug2[instance_mask_sp, label] = 1
+        #
+        # retk2 = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, instance_labels_aug2, instance_mask_aug2)
+        # output_featsk2 = retk2['instance_feats']
+        # output_featsk2 = nn.functional.normalize(output_featsk2, dim=1)
+        #
+        # output_featsk = torch.cat((output_featsk1, output_featsk2), 0)
         ##### sample
         # length = min(output_feats.shape[0], output_featsk.shape[0])
         # sel = np.random.choice(length, min(length, num_hn_samples), replace=False)
@@ -361,6 +389,12 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         labels = labels.cuda()
         loss = CELOSS(logits/0.07, labels)
 
+        # calculate the accuracy
+        num_pos = logits.shape[0]
+        selected = torch.argmax(logits, dim=1).to('cpu')
+        gt = torch.arange(num_pos)
+        num_correct = torch.sum(selected == gt).item()
+        accuracy += num_correct / num_pos
 
         ##### backward
         optimizer.zero_grad()
@@ -393,6 +427,8 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
     utils.checkpoint_save(model, cfg.exp_path, cfg.config.split('/')[-1][:-5], epoch, cfg.save_freq, use_cuda)
 
     writer.add_scalar('loss_pretrain', loss_print / len(train_loader), epoch)
+
+    writer.add_scalar('accuracy', accuracy / len(train_loader), epoch)
 
 if __name__ == '__main__':
     ##### init

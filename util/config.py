@@ -10,7 +10,8 @@ import os
 def get_parser():
     parser = argparse.ArgumentParser(description='Point Cloud Segmentation')
     parser.add_argument('--config', type=str, default='config/pointgroup_default_scannet.yaml', help='path to config file')
-
+    parser.add_argument('--filter', type=str, default='config/pointgroup_default_scannet.yaml')
+    parser.add_argument('--test_epoch', type=int, default=128)
     ### pretrain
     parser.add_argument('--pretrain', type=str, default='', help='path to pretrain model')
 
@@ -27,3 +28,4 @@ def get_parser():
 
 cfg = get_parser()
 setattr(cfg, 'exp_path', os.path.join('exp', cfg.dataset, cfg.model_name, cfg.config.split('/')[-1][:-5]))
+setattr(cfg, 'filter_path', os.path.join('exp', cfg.dataset, cfg.model_name, cfg.filter.split('/')[-1][:-5]))

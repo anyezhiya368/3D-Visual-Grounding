@@ -68,6 +68,8 @@ def visualize_pts_rgb(fig, pts, rgb, scale=0.02):
                            figure=fig)
     points.module_manager.scalar_lut_manager.lut.table = pt_colors
 
+def add_bboxes(fig, xyz):
+
 
 def get_coords_color(opt):
     input_file = os.path.join(opt.data_root, opt.room_split, opt.room_name + '_inst_nostuff.pth')
@@ -127,9 +129,6 @@ def get_coords_color(opt):
 
     return xyz, rgb
 
-
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', help='path to the input dataset files', default='../dataset/scannetv2')
@@ -145,5 +144,6 @@ if __name__ == '__main__':
 
     fig = mlab.figure(figure=None, bgcolor=(1.0, 1.0, 1.0), size=((800, 800)))
     visualize_pts_rgb(fig, xyz, rgb)
+    add_bboxes(fig, xyz)
     mlab.show()
 

@@ -1,4 +1,4 @@
-# venilla
+# gt region
 GENERAL:
   task: train  # train, test
   manual_seed: 123
@@ -29,7 +29,7 @@ STRUCTURE:
   use_coords: True
 
 TRAIN:
-  epochs: 384
+  epochs: 128
   train_workers: 16 # data loader workers
   optim: Adam # Adam or SGD
   lr: 0.001

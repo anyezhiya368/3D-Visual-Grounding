@@ -15,6 +15,9 @@ from util.log import logger
 import util.utils as utils
 import util.eval as eval
 
+semantic_label_idxs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 24, 28, 33, 34, 36, 39]
+semantic_label_names = ['wall', 'floor', 'cabinet', 'bed', 'chair', 'sofa', 'table', 'door', 'window', 'bookshelf', 'picture', 'counter', 'desk', 'curtain', 'refrigerator', 'shower curtain', 'toilet', 'sink', 'bathtub', 'otherfurniture']
+
 def init():
     global result_dir
     result_dir = os.path.join(cfg.exp_path, 'result', 'epoch{}_nmst{}_scoret{}_npointt{}'.format(cfg.test_epoch, cfg.TEST_NMS_THRESH, cfg.TEST_SCORE_THRESH, cfg.TEST_NPOINT_THRESH), cfg.split)
@@ -127,8 +130,13 @@ def test(model, model_fn, data_name, epoch):
             start3 = time.time()
             if cfg.save_semantic:
                 os.makedirs(os.path.join(result_dir, 'semantic'), exist_ok=True)
-                semantic_np = semantic_pred.cpu().numpy()
-                np.save(os.path.join(result_dir, 'semantic', test_scene_name + '.npy'), semantic_np)
+                semantic_np_ori = semantic_pred.cpu().numpy()
+                semantic_np = np.zeros_like(semantic_np_ori, dtype=np.int32)
+                num_labels = 20
+                for label_idx in range(num_labels):
+                    label_mask = np.where(semantic_np_ori == label_idx)[0]
+                    semantic_np[label_mask] = semantic_label_idxs[label_idx]
+                np.savetxt(os.path.join(result_dir, 'semantic', test_scene_name + '.txt'), semantic_np, fmt='%d')
 
             if cfg.save_pt_offsets:
                 os.makedirs(os.path.join(result_dir, 'coords_offsets'), exist_ok=True)
@@ -155,6 +163,7 @@ def test(model, model_fn, data_name, epoch):
 
             ##### print
             logger.info("instance iter: {}/{} point_num: {} ncluster: {} time: total {:.2f}s inference {:.2f}s save {:.2f}s".format(batch['id'][0] + 1, len(dataset.test_files), N, nclusters, end, end1, end3))
+            #logger.info("instance iter: {}/{} time: total {:.2f}s inference {:.2f}s save {:.2f}s".format(batch['id'][0] + 1, len(dataset.test_files), end, end1, end3))
 
         ##### evaluation
         if cfg.eval:
