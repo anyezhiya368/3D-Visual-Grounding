@@ -29,7 +29,7 @@ STRUCTURE:
   use_coords: True
 
 TRAIN:
-  epochs: 128
+  epochs: 500
   train_workers: 16 # data loader workers
   optim: Adam # Adam or SGD
   lr: 0.001
@@ -62,7 +62,7 @@ GROUP:
 
 TEST:
   split: val
-  test_epoch: 128
+  #test_epoch: 128
   test_workers: 16
   test_seed: 567
 

@@ -1,4 +1,4 @@
-# coords_jittered point
+# point
 GENERAL:
   task: train  # train, test
   manual_seed: 123
@@ -29,7 +29,7 @@ STRUCTURE:
   use_coords: True
 
 TRAIN:
-  epochs: 128
+  epochs: 500
   train_workers: 16 # data loader workers
   optim: Adam # Adam or SGD
   lr: 0.001
@@ -62,7 +62,7 @@ GROUP:
 
 TEST:
   split: val
-  test_epoch: 128
+  #test_epoch: 500
   test_workers: 16
   test_seed: 567
 
@@ -70,7 +70,7 @@ TEST:
   TEST_SCORE_THRESH: 0.09
   TEST_NPOINT_THRESH: 100
 
-  eval: False
-  save_semantic: True
+  eval: True
+  save_semantic: False
   save_pt_offsets: False
   save_instance: False

@@ -15,6 +15,9 @@ from util.log import logger
 import util.utils as utils
 import util.eval as eval
 
+from tensorboardX import SummaryWriter
+writer = SummaryWriter(cfg.exp_path)
+
 semantic_label_idxs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 24, 28, 33, 34, 36, 39]
 semantic_label_names = ['wall', 'floor', 'cabinet', 'bed', 'chair', 'sofa', 'table', 'door', 'window', 'bookshelf', 'picture', 'counter', 'desk', 'curtain', 'refrigerator', 'shower curtain', 'toilet', 'sink', 'bathtub', 'otherfurniture']
 
@@ -157,6 +160,7 @@ def test(model, model_fn, data_name, epoch):
                         f.write('\n')
                     np.savetxt(os.path.join(result_dir, 'predicted_masks', test_scene_name + '_%03d.txt' % (proposal_id)), clusters_i, fmt='%d')
                 f.close()
+
             end3 = time.time() - start3
             end = time.time() - start
             start = time.time()
@@ -170,6 +174,14 @@ def test(model, model_fn, data_name, epoch):
             ap_scores = eval.evaluate_matches(matches)
             avgs = eval.compute_averages(ap_scores)
             eval.print_results(avgs)
+
+        all_ap_avg = avgs["all_ap"]
+        all_ap_50o = avgs["all_ap_50%"]
+        all_ap_25o = avgs["all_ap_25%"]
+
+        writer.add_scalar('map_1', all_ap_avg, cfg.test_epoch)
+        writer.add_scalar('map_50_1', all_ap_50o, cfg.test_epoch)
+        writer.add_scalar('map_25_1', all_ap_25o, cfg.test_epoch)
 
 
 def non_max_suppression(ious, scores, threshold):

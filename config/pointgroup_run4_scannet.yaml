@@ -1,4 +1,4 @@
-# pretrain scene
+# region+mlp+avg
 GENERAL:
   task: train  # train, test
   manual_seed: 123
@@ -29,11 +29,11 @@ STRUCTURE:
   use_coords: True
 
 TRAIN:
-  epochs: 100
+  epochs: 500
   train_workers: 16 # data loader workers
   optim: Adam # Adam or SGD
   lr: 0.001
-  step_epoch: 100
+  step_epoch: 384
   multiplier: 0.5
   momentum: 0.9
   weight_decay: 0.0001
@@ -62,7 +62,7 @@ GROUP:
 
 TEST:
   split: val
-  test_epoch: 384
+  #test_epoch: 500
   test_workers: 16
   test_seed: 567
 

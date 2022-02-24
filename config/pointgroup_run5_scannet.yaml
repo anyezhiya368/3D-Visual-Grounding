@@ -1,4 +1,4 @@
-# point
+# region+nopool+random
 GENERAL:
   task: train  # train, test
   manual_seed: 123

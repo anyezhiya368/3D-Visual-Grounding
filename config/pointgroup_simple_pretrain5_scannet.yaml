@@ -1,4 +1,4 @@
-# pretrain region one-hot exclude one
+# pretrain region
 GENERAL:
   task: train  # train, test
   manual_seed: 123
@@ -29,11 +29,11 @@ STRUCTURE:
   use_coords: True
 
 TRAIN:
-  epochs: 200
+  epochs: 100
   train_workers: 16 # data loader workers
   optim: Adam # Adam or SGD
   lr: 0.001
-  step_epoch: 200
+  step_epoch: 100
   multiplier: 0.5
   momentum: 0.9
   weight_decay: 0.0001

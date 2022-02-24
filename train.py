@@ -130,6 +130,7 @@ def force_cudnn_initialization():
     torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
 
 if __name__ == '__main__':
+    torch.set_num_threads(1)
     #force_cudnn_initialization()
     ##### init
     init()

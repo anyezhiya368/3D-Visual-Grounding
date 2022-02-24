@@ -323,6 +323,7 @@ class Dataset:
         locs = []
         locs_float = []
         feats = []
+        labels = []
 
         batch_offsets = [0]
 
@@ -350,6 +351,7 @@ class Dataset:
             locs.append(torch.cat([torch.LongTensor(xyz.shape[0], 1).fill_(i), torch.from_numpy(xyz).long()], 1))
             locs_float.append(torch.from_numpy(xyz_middle))
             feats.append(torch.from_numpy(rgb))
+            labels.append(torch.from_numpy(label))
 
         ### merge all the scenes in the batch
         batch_offsets = torch.tensor(batch_offsets, dtype=torch.int)  # int (B+1)
@@ -357,6 +359,7 @@ class Dataset:
         locs = torch.cat(locs, 0)                                         # long (N, 1 + 3), the batch item idx is put in locs[:, 0]
         locs_float = torch.cat(locs_float, 0).to(torch.float32)           # float (N, 3)
         feats = torch.cat(feats, 0)                                       # float (N, C)
+        labels = torch.cat(labels, 0).long()  # long (N)
 
         spatial_shape = np.clip((locs.max(0)[0][1:] + 1).numpy(), self.full_scale[0], None)  # long (3)
 
@@ -364,5 +367,5 @@ class Dataset:
         voxel_locs, p2v_map, v2p_map = pointgroup_ops.voxelization_idx(locs, self.batch_size, self.mode)
 
         return {'locs': locs, 'voxel_locs': voxel_locs, 'p2v_map': p2v_map, 'v2p_map': v2p_map,
-                'locs_float': locs_float, 'feats': feats,
+                'locs_float': locs_float, 'feats': feats, 'labels' : labels,
                 'id': id, 'offsets': batch_offsets, 'spatial_shape': spatial_shape}

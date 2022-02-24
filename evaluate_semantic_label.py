@@ -124,16 +124,20 @@ def evaluate(pred_files, gt_files, output_file):
         class_ious[label_name] = get_iou(label_id, confusion)
     # print
     meaniou = 0
+    foreground_iou = 0
     print('classes          IoU')
     print('----------------------------')
     for i in range(len(VALID_CLASS_IDS)):
         label_name = CLASS_LABELS[i]
         meaniou += class_ious[label_name][0]
+        if i > 1:
+            foreground_iou += class_ious[label_name][0]
         #print('{{0:<14s}: 1:>5.3f}'.format(label_name, class_ious[label_name][0]))
         print('{0:<14s}: {1:>5.3f}   ({2:>6d}/{3:<6d})'.format(label_name, class_ious[label_name][0], class_ious[label_name][1], class_ious[label_name][2]))
     write_result_file(confusion, class_ious, output_file)
 
-    writer.add_scalar('meanIoU', meaniou / len(VALID_CLASS_IDS), opt.epoch)
+    writer.add_scalar('IoU', meaniou / len(VALID_CLASS_IDS), opt.epoch)
+    writer.add_scalar('foregroundIoU', foreground_iou / 18, opt.epoch)
 
 
 def main():

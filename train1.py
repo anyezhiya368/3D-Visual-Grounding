@@ -140,6 +140,7 @@ def filter_stat_dict(model, exp_path, exp_name, use_cuda, epoch=0):
         f = f[-1]
         epoch = int(f[len(exp_path) + len(exp_name) + 2: -4])
     checkpoint = torch.load(f, map_location='cpu')
+    logger.info('Restore from' + f)
     for key in state_dict:
         if key in checkpoint and state_dict[key].size() == checkpoint[key].size():
             print("成功初始化参数：", key)
