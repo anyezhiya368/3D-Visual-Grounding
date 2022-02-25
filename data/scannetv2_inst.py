@@ -3,7 +3,7 @@ ScanNet v2 Dataloader (Modified from SparseConvNet Dataloader)
 Written by Li Jiang
 '''
 
-import os, sys, glob, math, numpy as np
+import os, sys, glob, math, json, numpy as np
 import scipy.ndimage
 import scipy.interpolate
 import torch
@@ -168,11 +168,23 @@ class Dataset:
         instance_infos = []  # (N, 9)
         instance_pointnum = []  # (total_nInst), int
 
+        embeddingss = []
+        referred_inss = []
+        language_offsets = []
+        language_lens = []
+
         batch_offsets = [0]
 
         total_inst_num = 0
         for i, idx in enumerate(id):
-            xyz_origin, rgb, label, instance_label = self.train_files[idx]
+            xyz_origin, rgb, label, instance_label, embeddings, referred_ins, language_len = self.train_files[idx]
+
+            language_offset = torch.LongTensor((embeddings.shape[0], embeddings.shape[1], 1)).fill_(i)
+            language_offsets.append(language_offset)
+            embeddingss.append(torch.from_numpy(embeddings).long())
+            referred_ins += total_inst_num
+            referred_inss.append(torch.from_numpy(referred_ins))
+            language_lens.append(torch.from_numpy(language_len))
 
             ### jitter / flip x / rotation
             xyz_middle = self.dataAugment(xyz_origin, True, True, True)
@@ -220,6 +232,12 @@ class Dataset:
             instance_pointnum.extend(inst_pointnum)
 
         ### merge all the scenes in the batchd
+
+        embeddings = torch.cat(embeddingss, 0)
+        referred_ins = torch.cat(referred_inss, 0).long()
+        language_offset = torch.cat(language_offsets, 0).long()
+        language_len = torch.cat(language_lens, 0).long()
+
         batch_offsets = torch.tensor(batch_offsets, dtype=torch.int)  # int (B+1)
 
         locs = torch.cat(locs, 0)                                # long (N, 1 + 3), the batch item idx is put in locs[:, 0]
@@ -239,7 +257,8 @@ class Dataset:
         return {'locs': locs, 'voxel_locs': voxel_locs, 'p2v_map': p2v_map, 'v2p_map': v2p_map,
                 'locs_float': locs_float, 'feats': feats, 'labels': labels, 'instance_labels': instance_labels,
                 'instance_info': instance_infos, 'instance_pointnum': instance_pointnum,
-                'id': id, 'offsets': batch_offsets, 'spatial_shape': spatial_shape}
+                'id': id, 'offsets': batch_offsets, 'spatial_shape': spatial_shape, 'embeddings': embeddings,
+                'referred_ins': referred_ins, 'language_offset': language_offset, 'language_len': language_len}
 
 
     def valMerge(self, id):

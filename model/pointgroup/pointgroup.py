@@ -27,6 +27,7 @@ sys.path.append('../../')
 from lib.pointgroup_ops.functions import pointgroup_ops
 from util import utils
 from util.pytorch_util import SharedMLP
+from model.language_branch import LangModule
 
 class ResidualBlock(SparseModule):
     def __init__(self, in_channels, out_channels, norm_fn, indice_key=None):
@@ -172,25 +173,27 @@ class PointGroup(nn.Module):
             nn.ReLU()
         )
 
-        # self.mlp_module = SharedMLP([16, 256, 1024], bn=True)
-        # self.mlp = nn.Sequential(
-        #    nn.Linear(16, 256),
-        #    nn.ReLU(),
-        #    nn.Linear(256, 1024),
-        #    nn.ReLU()
-        # )
+        self.mlp_module = SharedMLP([16, 256, 1024], bn=True)
+        self.mlp = nn.Sequential(
+           nn.Linear(16, 256),
+           nn.ReLU(),
+        )
 
-
-        # #### semantic segmentation
-        self.linear = nn.Linear(m, classes) # bias(default): True
-        # #
-        # # # # #### offset
-        self.offset = nn.Sequential(
-            nn.Linear(m, m, bias=True),
-            norm_fn(m),
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(256 + 256, 256),
             nn.ReLU()
         )
-        self.offset_linear = nn.Linear(m, 3, bias=True)
+
+        # # #### semantic segmentation
+        # self.linear = nn.Linear(m, classes) # bias(default): True
+        # # #
+        # # # # # #### offset
+        # self.offset = nn.Sequential(
+        #     nn.Linear(m, m, bias=True),
+        #     norm_fn(m),
+        #     nn.ReLU()
+        # )
+        # self.offset_linear = nn.Linear(m, 3, bias=True)
 
         # #### score branch
         # self.score_unet = UBlock([m, 2*m], norm_fn, 2, block, indice_key_id=1)
@@ -279,7 +282,7 @@ class PointGroup(nn.Module):
 
         return voxelization_feats, inp_map
 
-    def forward(self, input, input_map, coords, batch_idxs, batch_offsets, epoch):
+    def forward(self, input, input_map, coords, batch_idxs, batch_offsets, epoch, embeddings, language_len, v2p_map, instance_labels):
         '''
         :param input_map: (N), int, cuda
         :param coords: (N, 3), float, cuda
@@ -292,75 +295,61 @@ class PointGroup(nn.Module):
         '''
         ret = {}
 
+        data_dict = {'lang_feat': embeddings, 'lang_len': language_len}
+        data_dict = LangModule(data_dict)
+        lang_feat = data_dict['lang_attr_feats']  # (num_u, 256)
+
         output = self.input_conv(input)
         output = self.unet(output)
         output = self.output_layer(output) # (M, K)
-        output_feats = output.features[input_map.long()] # (N, K) the feature map
+        #output_feats = output.features[input_map.long()] # (N, K) the feature map
         #ret['output_feats'] = output.features
         #print("OUTPUT_FEATS:", output_feats.shape)
 
-        # output_feats = output.features
-        # v2p_map = v2p_map.long()
-        # v2p_map = v2p_map[:, 1:]
-        # map_mask = v2p_map > 0
-        # v2p_map[map_mask] += 1
-        # instance_labels = instance_labels.to('cpu')
-        # instance_labels = torch.cat((torch.tensor([-100]), instance_labels), 0)
-        # labels = labels.to('cpu')
-        # labels = torch.cat((torch.tensor([-100]), labels), 0)
-        # v2p_map_ins = instance_labels[v2p_map]
-        # v2p_map_sem = labels[v2p_map]
-        # map_mask2_ins = v2p_map_ins >= 0
-        # v2p_map_ins[map_mask2_ins] += 1
-        # map_mask3_ins = v2p_map_ins < 0
-        # v2p_map_ins[map_mask3_ins] = 0
-        # map_mask2_sem = v2p_map_sem >= 0
-        # v2p_map_sem[map_mask2_sem] += 1
-        # map_mask3_sem = v2p_map_sem < 0
-        # v2p_map_sem[map_mask3_sem] = 0
-        # num_instance = torch.max(instance_labels).item() + 1
-        # num_semantic = torch.max(labels).item() + 1
-        # src_ins = torch.ones_like(v2p_map_ins, dtype=torch.long)
-        # src_sem = torch.ones_like(v2p_map_sem, dtype=torch.long)
-        # instance_mask = torch.zeros(v2p_map_ins.shape[0], 1 + num_instance, dtype=torch.long).scatter_add_(1, v2p_map_ins, src_ins)
-        # semantic_mask = torch.zeros(v2p_map_sem.shape[0], 1 + num_semantic, dtype=torch.long).scatter_add_(1, v2p_map_sem, src_sem)
-        # instance_mask = instance_mask[:, 1:]
-        # semantic_mask = semantic_mask[:, 1:]
-        # instance_mask = torch.argmax(instance_mask, dim=1)
-        # semantic_mask = torch.argmax(semantic_mask, dim=1)
-        # instances_feat = torch.zeros(num_instance + 2, 16).cuda()
-        # num_useless = 0
-        # for instance_idx in range(num_instance):
-        #     mask = torch.nonzero(instance_mask == instance_idx).view(-1)
-        #     instance_feat = output_feats[mask]
-        #     if instance_feat.shape[0] > 1:
-        #         instance_feat = instance_feat.transpose(0, 1)
-        #         instance_feat = instance_feat.unsqueeze(0).unsqueeze(2)
-        #         instance_feat = F.avg_pool2d(
-        #             instance_feat, kernel_size=[1, instance_feat.shape[3]]
-        #         )
-        #         instances_feat[instance_idx - num_useless, :] = instance_feat.squeeze(0).squeeze(-1).squeeze(-1)
-        #     elif instance_feat.shape[0] == 1:
-        #         instances_feat[instance_idx - num_useless, :] = instance_feat.squeeze(0)
-        #     else:
-        #         num_useless += 1
-        # for semantic_idx in [0, 1]:
-        #     mask = torch.nonzero(semantic_mask == semantic_idx).view(-1)
-        #     semantic_feat = output_feats[mask]
-        #     if semantic_feat.shape[0] > 1:
-        #         semantic_feat = semantic_feat.transpose(0, 1)
-        #         semantic_feat = semantic_feat.unsqueeze(0).unsqueeze(2)
-        #         semantic_feat = F.avg_pool2d(
-        #             semantic_feat, kernel_size=[1, semantic_feat.shape[3]]
-        #         )
-        #         instances_feat[num_instance - num_useless + semantic_idx, :] = semantic_feat.squeeze(0).squeeze(-1).squeeze(-1)
-        #     elif semantic_feat.shape[0] == 1:
-        #         instances_feat[num_instance - num_useless + semantic_idx, :] = semantic_feat.squeeze(0)
-        #     else:
-        #         num_useless += 1
-        #
-        # instances_feat = instances_feat[:num_instance + 2 - num_useless, :]
-        # ret['output_feats'] = instances_feat
+        output_feats = output.features
+        v2p_map = v2p_map.long()
+        v2p_map = v2p_map[:, 1:]
+        map_mask = v2p_map > 0
+        v2p_map[map_mask] += 1
+        instance_labels = instance_labels.to('cpu')
+        instance_labels = torch.cat((torch.tensor([-100]), instance_labels), 0)
+        v2p_map = instance_labels[v2p_map]
+        map_mask2 = v2p_map >= 0
+        v2p_map[map_mask2] += 1
+        map_mask3 = v2p_map < 0
+        v2p_map[map_mask3] = 0
+        num_instance = torch.max(instance_labels).item() + 1
+        src_ins = torch.ones_like(v2p_map, dtype=torch.long)
+        instance_mask = torch.zeros(v2p_map.shape[0], 1 + num_instance, dtype=torch.long).scatter_add_(1, v2p_map, src_ins)
+        instance_mask = instance_mask[:, 1:]
+        instance_mask = torch.argmax(instance_mask, dim=1)
+        instances_feat = torch.zeros(num_instance, 16).cuda()
+        num_useless = 0
+        for instance_idx in range(num_instance):
+            mask = torch.nonzero(instance_mask == instance_idx).view(-1)
+            instance_feat = output_feats[mask]
+            if instance_feat.shape[0] > 1:
+                instance_feat = instance_feat.transpose(0, 1)
+                instance_feat = instance_feat.unsqueeze(0).unsqueeze(2)
+                instance_feat = F.avg_pool2d(
+                    instance_feat, kernel_size=[1, instance_feat.shape[3]]
+                )
+                instances_feat[instance_idx - num_useless, :] = instance_feat.squeeze(0).squeeze(-1).squeeze(-1)
+            elif instance_feat.shape[0] == 1:
+                instances_feat[instance_idx - num_useless, :] = instance_feat.squeeze(0)
+            else:
+                num_useless += 1
+        instances_feat = instances_feat[:num_instance - num_useless, :] # (num_ins, 1024)
+
+        num_ins = instance_feat.shape[0]
+        num_lang = lang_feat.shape[0]
+        lang_feat = lang_feat.unsqueeze(1)                             # (num_u, 1, 256)
+        lang_feat = lang_feat.repeat(1, num_ins, 1)                    # (num_u, num_ins, 256)
+        instances_feat = instances_feat.unsqueeze(0)                   # (1, num_ins, 1024)
+        instances_feat = instances_feat.repeat(num_lang, 1, 1)          # (num_u, num_ins, 1024)
+        fused_feat = torch.cat((lang_feat, instances_feat), 2)         # (num_u, num_ins, 1024 + 256)
+        fused_feat = self.fusion_mlp(fused_feat)
+        ret['output_feats'] = fused_feat
 
         # scene_feat = torch.zeros(4, 80).cuda()
         # feats = output.features
@@ -401,72 +390,72 @@ class PointGroup(nn.Module):
         # ret['instance_feats'] = instances_feat
 
 
-        #### semantic segmentation
-        semantic_scores = self.linear(output_feats)   # (N, nClass), float
-        semantic_preds = semantic_scores.max(1)[1]    # (N), long
-
-        ret['semantic_scores'] = semantic_scores
-
-        # #### offset
-        pt_offsets_feats = self.offset(output_feats)
-        pt_offsets = self.offset_linear(pt_offsets_feats)   # (N, 3), float32
-
-        ret['pt_offsets'] = pt_offsets
+        # #### semantic segmentation
+        # semantic_scores = self.linear(output_feats)   # (N, nClass), float
+        # semantic_preds = semantic_scores.max(1)[1]    # (N), long
         #
-        if(epoch > self.prepare_epochs):
-             #### get prooposal clusters
-             object_idxs = torch.nonzero(semantic_preds > 1).view(-1) # index for all the points contained inside an object
-
-             batch_idxs_ = batch_idxs[object_idxs]
-             batch_offsets_ = utils.get_batch_offsets(batch_idxs_, input.batch_size)
-             coords_ = coords[object_idxs]
-             pt_offsets_ = pt_offsets[object_idxs]
-
-             semantic_preds_cpu = semantic_preds[object_idxs].int().cpu()
-             # the above codes are doing the filtering job
-
-             idx_shift, start_len_shift = pointgroup_ops.ballquery_batch_p(coords_ + pt_offsets_, batch_idxs_, batch_offsets_, self.cluster_radius, self.cluster_shift_meanActive)
-             proposals_idx_shift, proposals_offset_shift = pointgroup_ops.bfs_cluster(semantic_preds_cpu, idx_shift.cpu(), start_len_shift.cpu(), self.cluster_npoint_thre)
-             proposals_idx_shift[:, 1] = object_idxs[proposals_idx_shift[:, 1].long()].int()
-             # proposals_idx_shift: (sumNPoint, 2), int, dim 0 for cluster_id, dim 1 for corresponding point idxs in N
-             # proposals_offset_shift: (nProposal + 1), int
-
-             # idx, start_len = pointgroup_ops.ballquery_batch_p(coords_, batch_idxs_, batch_offsets_, self.cluster_radius, self.cluster_meanActive)
-             # proposals_idx, proposals_offset = pointgroup_ops.bfs_cluster(semantic_preds_cpu, idx.cpu(), start_len.cpu(), self.cluster_npoint_thre)
-             # proposals_idx[:, 1] = object_idxs[proposals_idx[:, 1].long()].int()
-             # # proposals_idx: (sumNPoint, 2), int, dim 0 for cluster_id, dim 1 for corresponding point idxs in N
-             # # proposals_offset: (nProposal + 1), int
-             #
-             # proposals_idx_shift[:, 0] += (proposals_offset.size(0) - 1)
-             # proposals_offset_shift += proposals_offset[-1]
-             # proposals_idx = torch.cat((proposals_idx, proposals_idx_shift), dim=0)
-             # proposals_offset = torch.cat((proposals_offset, proposals_offset_shift[1:]))
-             #
-             #
-             # #### proposals voxelization again
-             # input_feats, inp_map = self.clusters_voxelization(proposals_idx, proposals_offset, output_feats, coords, self.score_fullscale, self.score_scale, self.mode)
-             #
-             # #### score
-             # score = self.score_unet(input_feats)
-             # score = self.score_outputlayer(score)
-             # score_feats = score.features[inp_map.long()] # (sumNPoint, C)
-             # score_feats = pointgroup_ops.roipool(score_feats, proposals_offset.cuda())  # (nProposal, C)
-             # scores = self.score_linear(score_feats)  # (nProposal, 1)
-
-             proposals_idx = proposals_idx_shift
-             proposals_offset = proposals_offset_shift
-             #### score
-             semantic_id = semantic_preds[proposals_idx[:, 1][proposals_offset[:-1].long()].long()]  # (nProposal), long
-             scores = torch.zeros_like(semantic_id, dtype=torch.float64)
-             for cluster_id in range(semantic_id.shape[0]):
-                 position_mask = torch.nonzero(proposals_idx[:, 0] == cluster_id).view(-1)
-                 point_mask = proposals_idx[position_mask, 1].long()
-                 masked_score = semantic_scores[point_mask, :]
-                 scores[cluster_id] = torch.mean(masked_score[:, semantic_id[cluster_id]]).item()
-
-             scores = scores.unsqueeze(-1)
-
-             ret['proposal_scores'] = (scores, proposals_idx, proposals_offset)
+        # ret['semantic_scores'] = semantic_scores
+        #
+        # # #### offset
+        # pt_offsets_feats = self.offset(output_feats)
+        # pt_offsets = self.offset_linear(pt_offsets_feats)   # (N, 3), float32
+        #
+        # ret['pt_offsets'] = pt_offsets
+        # #
+        # if(epoch > self.prepare_epochs):
+        #      #### get prooposal clusters
+        #      object_idxs = torch.nonzero(semantic_preds > 1).view(-1) # index for all the points contained inside an object
+        #
+        #      batch_idxs_ = batch_idxs[object_idxs]
+        #      batch_offsets_ = utils.get_batch_offsets(batch_idxs_, input.batch_size)
+        #      coords_ = coords[object_idxs]
+        #      pt_offsets_ = pt_offsets[object_idxs]
+        #
+        #      semantic_preds_cpu = semantic_preds[object_idxs].int().cpu()
+        #      # the above codes are doing the filtering job
+        #
+        #      idx_shift, start_len_shift = pointgroup_ops.ballquery_batch_p(coords_ + pt_offsets_, batch_idxs_, batch_offsets_, self.cluster_radius, self.cluster_shift_meanActive)
+        #      proposals_idx_shift, proposals_offset_shift = pointgroup_ops.bfs_cluster(semantic_preds_cpu, idx_shift.cpu(), start_len_shift.cpu(), self.cluster_npoint_thre)
+        #      proposals_idx_shift[:, 1] = object_idxs[proposals_idx_shift[:, 1].long()].int()
+        #      # proposals_idx_shift: (sumNPoint, 2), int, dim 0 for cluster_id, dim 1 for corresponding point idxs in N
+        #      # proposals_offset_shift: (nProposal + 1), int
+        #
+        #      # idx, start_len = pointgroup_ops.ballquery_batch_p(coords_, batch_idxs_, batch_offsets_, self.cluster_radius, self.cluster_meanActive)
+        #      # proposals_idx, proposals_offset = pointgroup_ops.bfs_cluster(semantic_preds_cpu, idx.cpu(), start_len.cpu(), self.cluster_npoint_thre)
+        #      # proposals_idx[:, 1] = object_idxs[proposals_idx[:, 1].long()].int()
+        #      # # proposals_idx: (sumNPoint, 2), int, dim 0 for cluster_id, dim 1 for corresponding point idxs in N
+        #      # # proposals_offset: (nProposal + 1), int
+        #      #
+        #      # proposals_idx_shift[:, 0] += (proposals_offset.size(0) - 1)
+        #      # proposals_offset_shift += proposals_offset[-1]
+        #      # proposals_idx = torch.cat((proposals_idx, proposals_idx_shift), dim=0)
+        #      # proposals_offset = torch.cat((proposals_offset, proposals_offset_shift[1:]))
+        #      #
+        #      #
+        #      # #### proposals voxelization again
+        #      # input_feats, inp_map = self.clusters_voxelization(proposals_idx, proposals_offset, output_feats, coords, self.score_fullscale, self.score_scale, self.mode)
+        #      #
+        #      # #### score
+        #      # score = self.score_unet(input_feats)
+        #      # score = self.score_outputlayer(score)
+        #      # score_feats = score.features[inp_map.long()] # (sumNPoint, C)
+        #      # score_feats = pointgroup_ops.roipool(score_feats, proposals_offset.cuda())  # (nProposal, C)
+        #      # scores = self.score_linear(score_feats)  # (nProposal, 1)
+        #
+        #      proposals_idx = proposals_idx_shift
+        #      proposals_offset = proposals_offset_shift
+        #      #### score
+        #      semantic_id = semantic_preds[proposals_idx[:, 1][proposals_offset[:-1].long()].long()]  # (nProposal), long
+        #      scores = torch.zeros_like(semantic_id, dtype=torch.float64)
+        #      for cluster_id in range(semantic_id.shape[0]):
+        #          position_mask = torch.nonzero(proposals_idx[:, 0] == cluster_id).view(-1)
+        #          point_mask = proposals_idx[position_mask, 1].long()
+        #          masked_score = semantic_scores[point_mask, :]
+        #          scores[cluster_id] = torch.mean(masked_score[:, semantic_id[cluster_id]]).item()
+        #
+        #      scores = scores.unsqueeze(-1)
+        #
+        #      ret['proposal_scores'] = (scores, proposals_idx, proposals_offset)
 
 
         return ret

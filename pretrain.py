@@ -17,6 +17,7 @@ from util.log import logger
 import util.utils as utils
 from spconv.pytorch.core import SparseConvTensor
 from lib.pointgroup_ops.functions import pointgroup_ops
+from model.language_branch import LangModule
 
 m = 0.95
 num_hn_samples = 4096
@@ -230,6 +231,12 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         batch_offsets = batch['offsets'].cuda()                # (B + 1), int, cuda
         spatial_shape = batch['spatial_shape']
 
+        #####language branch#####
+        embeddings = batch['embeddings'].cuda()                # (num_u, 126, 300), cuda, float
+        referred_ins = batch['referred_ins'].cuda()            # (num_u), cuda, long
+        language_offset = batch['language_offset'].cuda()      # (num_u), cuda, long
+        language_len = batch['language_len'].cuda()            # (num_u), cuda, long
+
         # batch_idx = coords[:, 0]
         feats_aug = feats.clone()
         # feats_aug_offset = np.random.randn(feats_aug.shape[0], feats_aug.shape[1]) * 0.1
@@ -342,10 +349,10 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
           param_k.data = param_k.data.to(device) * m + param_q.data.to(device) * (1.00 - m)
 
         ##### forward
-        ret = model(input_, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch)
+        ret = model(input_, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch, embeddings, language_len, v2p_map, instance_labels)
         output_feats = ret['output_feats']
         #output_feats = output_feats[ablation_mask]
-        output_feats = nn.functional.normalize(output_feats, dim=1)
+        output_feats = nn.functional.normalize(output_feats, dim=1)                                # (num_u, num_ins, 256)
 
         retk1 = modelk(input_aug, p2v_map, coords_float, coords[:, 0].int(), batch_offsets, epoch)
         output_featsk1 = retk1['output_feats']
@@ -393,65 +400,65 @@ def train_epoch(train_loader, model, modelk, model_fn, optimizer, epoch):
         output_featsk = output_featsk[sel]
 
 
-        # logits = torch.mm(output_feats, output_featsk.transpose(1, 0))
-        # logits = logits.type(torch.float32)
-        # labels = torch.arange(output_feats.size()[0])
-        # labels = labels.cuda()
-        # loss = CELOSS(logits/0.07, labels)
         logits = torch.mm(output_feats, output_featsk.transpose(1, 0))
         logits = logits.type(torch.float32)
-
-        label_mask1 = (instance_labels == -100)
-        label_mask2 = (labels == 0)
-        label_mask3 = (labels == 1)
-        wall_mask = label_mask1 & label_mask2
-        wall_mask = torch.nonzero(wall_mask).view(-1)
-        instance_labels[wall_mask] = -1
-        floor_mask = label_mask1 & label_mask3
-        floor_mask = torch.nonzero(floor_mask).view(-1)
-        instance_labels[floor_mask] = -2
-        v2p_map = v2p_map.long()
-        v2p_map = v2p_map[:, 1:]
-        map_mask = v2p_map > 0
-        v2p_map[map_mask] += 1
-        instance_labels = torch.cat((torch.tensor([-100]).cuda(), instance_labels), 0)
-        v2p_map = instance_labels[v2p_map]
-        map_mask1 = v2p_map >= 0
-        v2p_map[map_mask1] += 3
-        map_mask2 = v2p_map == -2
-        v2p_map[map_mask2] = 2
-        map_mask3 = v2p_map == -1
-        v2p_map[map_mask3] = 1
-        map_mask3 = (v2p_map == -100)
-        v2p_map[map_mask3] = 0
-        num_instance = torch.max(instance_labels).item() + 1
-        src = torch.ones_like(v2p_map, dtype=torch.long).cuda()
-        instance_mask = torch.zeros(v2p_map.shape[0], 3 + num_instance, dtype=torch.long).cuda().scatter_add_(1, v2p_map, src)
-        instance_mask = instance_mask[:, 1:]
-        instance_mask = torch.argmax(instance_mask, dim=1)
-        instance_mask = instance_mask[sel]
-        num_voxel = instance_mask.shape[0]
-        mask1 = instance_mask.repeat((num_voxel, 1))
-        mask2 = instance_mask.unsqueeze(-1).repeat((1, num_voxel))
-        mask4pos = (mask1 == mask2).long()
-        mask4neg = (mask1 != mask2).long()
-        logits4pos = torch.zeros(logits.shape[0], 1).cuda()
-        logits4neg = torch.zeros(logits.shape[0], 15).cuda()
-        for line_id in range(logits.shape[0]):
-            logits_line = logits[line_id, :]
-            mask4pos_line = mask4pos[line_id, :]
-            mask4neg_line = mask4neg[line_id, :]
-            pos_pos = torch.nonzero(mask4pos_line == 1).view(-1)
-            pos_sel = np.random.choice(pos_pos.cpu().numpy(), 1)
-            logits4pos[line_id, :] = logits_line[pos_sel]
-            neg_pos = torch.nonzero(mask4neg_line == 1).view(-1)
-            neg_sel = np.random.choice(neg_pos.cpu().numpy(), 15, replace=False)
-            logits4neg[line_id, :] = logits_line[neg_sel]
-        logits = torch.cat((logits4pos, logits4neg), 1)
-
-        labels = torch.zeros(output_feats.size()[0], dtype=torch.long)
+        labels = torch.arange(output_feats.size()[0])
         labels = labels.cuda()
         loss = CELOSS(logits/0.07, labels)
+        # logits = torch.mm(output_feats, output_featsk.transpose(1, 0))
+        # logits = logits.type(torch.float32)
+
+        # label_mask1 = (instance_labels == -100)
+        # label_mask2 = (labels == 0)
+        # label_mask3 = (labels == 1)
+        # wall_mask = label_mask1 & label_mask2
+        # wall_mask = torch.nonzero(wall_mask).view(-1)
+        # instance_labels[wall_mask] = -1
+        # floor_mask = label_mask1 & label_mask3
+        # floor_mask = torch.nonzero(floor_mask).view(-1)
+        # instance_labels[floor_mask] = -2
+        # v2p_map = v2p_map.long()
+        # v2p_map = v2p_map[:, 1:]
+        # map_mask = v2p_map > 0
+        # v2p_map[map_mask] += 1
+        # instance_labels = torch.cat((torch.tensor([-100]).cuda(), instance_labels), 0)
+        # v2p_map = instance_labels[v2p_map]
+        # map_mask1 = v2p_map >= 0
+        # v2p_map[map_mask1] += 3
+        # map_mask2 = v2p_map == -2
+        # v2p_map[map_mask2] = 2
+        # map_mask3 = v2p_map == -1
+        # v2p_map[map_mask3] = 1
+        # map_mask3 = (v2p_map == -100)
+        # v2p_map[map_mask3] = 0
+        # num_instance = torch.max(instance_labels).item() + 1
+        # src = torch.ones_like(v2p_map, dtype=torch.long).cuda()
+        # instance_mask = torch.zeros(v2p_map.shape[0], 3 + num_instance, dtype=torch.long).cuda().scatter_add_(1, v2p_map, src)
+        # instance_mask = instance_mask[:, 1:]
+        # instance_mask = torch.argmax(instance_mask, dim=1)
+        # instance_mask = instance_mask[sel]
+        # num_voxel = instance_mask.shape[0]
+        # mask1 = instance_mask.repeat((num_voxel, 1))
+        # mask2 = instance_mask.unsqueeze(-1).repeat((1, num_voxel))
+        # mask4pos = (mask1 == mask2).long()
+        # mask4neg = (mask1 != mask2).long()
+        # logits4pos = torch.zeros(logits.shape[0], 1).cuda()
+        # logits4neg = torch.zeros(logits.shape[0], 15).cuda()
+        # for line_id in range(logits.shape[0]):
+        #     logits_line = logits[line_id, :]
+        #     mask4pos_line = mask4pos[line_id, :]
+        #     mask4neg_line = mask4neg[line_id, :]
+        #     pos_pos = torch.nonzero(mask4pos_line == 1).view(-1)
+        #     pos_sel = np.random.choice(pos_pos.cpu().numpy(), 1)
+        #     logits4pos[line_id, :] = logits_line[pos_sel]
+        #     neg_pos = torch.nonzero(mask4neg_line == 1).view(-1)
+        #     neg_sel = np.random.choice(neg_pos.cpu().numpy(), 15, replace=False)
+        #     logits4neg[line_id, :] = logits_line[neg_sel]
+        # logits = torch.cat((logits4pos, logits4neg), 1)
+
+        # labels = torch.zeros(output_feats.size()[0], dtype=torch.long)
+        # labels = labels.cuda()
+        # loss = CELOSS(logits/0.07, labels)
 
         # calculate the accuracy
         selected = torch.argmax(logits, dim=1).to('cpu')
